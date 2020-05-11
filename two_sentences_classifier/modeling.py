@@ -31,7 +31,6 @@ from io import open
 import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss
-import torch.nn.functional as F
 
 from file_utils import cached_path
 
@@ -93,25 +92,25 @@ def load_tf_weights_in_bert(model, tf_checkpoint_path):
         pointer = model
         for m_name in name:
             if re.fullmatch(r'[A-Za-z]+_\d+', m_name):
-                l = re.split(r'_(\d+)', m_name)
+                weights = re.split(r'_(\d+)', m_name)
             else:
-                l = [m_name]
-            if l[0] == 'kernel' or l[0] == 'gamma':
+                weights = [m_name]
+            if weights[0] == 'kernel' or weights[0] == 'gamma':
                 pointer = getattr(pointer, 'weight')
-            elif l[0] == 'output_bias' or l[0] == 'beta':
+            elif weights[0] == 'output_bias' or weights[0] == 'beta':
                 pointer = getattr(pointer, 'bias')
-            elif l[0] == 'output_weights':
+            elif weights[0] == 'output_weights':
                 pointer = getattr(pointer, 'weight')
-            elif l[0] == 'squad':
+            elif weights[0] == 'squad':
                 pointer = getattr(pointer, 'classifier')
             else:
                 try:
-                    pointer = getattr(pointer, l[0])
+                    pointer = getattr(pointer, weights[0])
                 except AttributeError:
                     print("Skipping {}".format("/".join(name)))
                     continue
-            if len(l) >= 2:
-                num = int(l[1])
+            if len(weights) >= 2:
+                num = int(weights[1])
                 pointer = pointer[num]
         if m_name[-11:] == '_embeddings':
             pointer = getattr(pointer, 'weight')
@@ -185,7 +184,7 @@ class BertConfig(object):
         """
         if isinstance(vocab_size_or_config_json_file,
                       str) or (sys.version_info[0] == 2
-                               and isinstance(vocab_size_or_config_json_file, unicode)):
+                               and isinstance(vocab_size_or_config_json_file, str)):
             with open(vocab_size_or_config_json_file, "r", encoding='utf-8') as reader:
                 json_config = json.loads(reader.read())
             for key, value in json_config.items():
@@ -316,8 +315,7 @@ class BertSelfAttention(nn.Module):
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
     def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size
-                                      )    # bsz x len x 8 x 64
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)    # bsz x len x 8 x 64
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)    # bsz x 8 x len x 64
 
@@ -386,7 +384,7 @@ class BertIntermediate(nn.Module):
         super(BertIntermediate, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
         if isinstance(config.hidden_act, str) or (sys.version_info[0] == 2
-                                                  and isinstance(config.hidden_act, unicode)):
+                                                  and isinstance(config.hidden_act, str)):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]    # 或者用ACT2FN里面定义的几个激活函数
         else:
             self.intermediate_act_fn = config.hidden_act    # 全连接层之后一般接激活函数，bert用gelu
@@ -467,7 +465,7 @@ class BertPredictionHeadTransform(nn.Module):
         super(BertPredictionHeadTransform, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         if isinstance(config.hidden_act, str) or (sys.version_info[0] == 2
-                                                  and isinstance(config.hidden_act, unicode)):
+                                                  and isinstance(config.hidden_act, str)):
             self.transform_act_fn = ACT2FN[config.hidden_act]
         else:
             self.transform_act_fn = config.hidden_act
@@ -919,7 +917,13 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         # 初始化参数
         self.apply(self.init_bert_weights)
 
-    def forward(self, input_ids, token_type_ids, attention_mask, position_ids=None, labels=None, embedding=False):
+    def forward(self,
+                input_ids,
+                token_type_ids,
+                attention_mask,
+                position_ids=None,
+                labels=None,
+                embedding=False):
         input_ids_size = input_ids.size()
         # bsz x 2 x len -> bsz*2 x len
         input_ids = input_ids.view(input_ids_size[0] * input_ids_size[1], input_ids_size[2])
