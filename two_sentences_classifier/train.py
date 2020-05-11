@@ -463,7 +463,7 @@ def main():
         batch_count = 0
         for step, batch in enumerate(tqdm(eval_dataloader, desc="evaluating")):
             example_ids, input_ids, input_mask, segment_ids, label_ids = batch
-            if  not args.do_train:
+            if not args.do_train:
                 label_ids = None
             with torch.no_grad():
                 tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, labels=label_ids)
