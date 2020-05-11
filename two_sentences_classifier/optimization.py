@@ -25,7 +25,6 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-
 if sys.version_info >= (3, 4):
     ABC = abc.ABC
 else:
@@ -34,7 +33,8 @@ else:
 
 class _LRSchedule(ABC):
     """ Parent of all LRSchedules here. """
-    warn_t_total = False        # is set to True for schedules where progressing beyond t_total steps doesn't make sense
+    warn_t_total = False    # is set to True for schedules where progressing beyond t_total steps doesn't make sense
+
     def __init__(self, warmup=0.002, t_total=-1, **kw):
         """
         :param warmup:  what fraction of t_total steps will be used for linear warmup
@@ -43,7 +43,8 @@ class _LRSchedule(ABC):
         """
         super(_LRSchedule, self).__init__(**kw)
         if t_total < 0:
-            logger.warning("t_total value of {} results in schedule not being applied".format(t_total))
+            logger.warning(
+                "t_total value of {} results in schedule not being applied".format(t_total))
         if not 0.0 <= warmup < 1.0 and not warmup == -1:
             raise ValueError("Invalid warmup: {} - should be in [0.0, 1.0[ or -1".format(warmup))
         warmup = max(warmup, 0.)
@@ -65,7 +66,7 @@ class _LRSchedule(ABC):
         if not nowarn and self.warn_t_total and progress > 1. and progress > self.warned_for_t_total_at_progress:
             logger.warning(
                 "Training beyond specified 't_total'. Learning rate multiplier set to {}. Please set 't_total' of {} correctly."
-                    .format(ret, self.__class__.__name__))
+                .format(ret, self.__class__.__name__))
             self.warned_for_t_total_at_progress = progress
         # end warning
         return ret
@@ -80,6 +81,7 @@ class _LRSchedule(ABC):
 
 
 class ConstantLR(_LRSchedule):
+
     def get_lr_(self, progress):
         return 1.
 
@@ -91,6 +93,7 @@ class WarmupCosineSchedule(_LRSchedule):
     If `cycles` (default=0.5) is different from default, learning rate follows cosine function after warmup.
     """
     warn_t_total = True
+
     def __init__(self, warmup=0.002, t_total=-1, cycles=.5, **kw):
         """
         :param warmup:      see LRSchedule
@@ -105,7 +108,7 @@ class WarmupCosineSchedule(_LRSchedule):
         if progress < self.warmup:
             return progress / self.warmup
         else:
-            progress = (progress - self.warmup) / (1 - self.warmup)   # progress after warmup
+            progress = (progress - self.warmup) / (1 - self.warmup)    # progress after warmup
             return 0.5 * (1. + math.cos(math.pi * self.cycles * 2 * progress))
 
 
@@ -115,15 +118,19 @@ class WarmupCosineWithHardRestartsSchedule(WarmupCosineSchedule):
     If `cycles` (default=1.) is different from default, learning rate follows `cycles` times a cosine decaying
     learning rate (with hard restarts).
     """
+
     def __init__(self, warmup=0.002, t_total=-1, cycles=1., **kw):
-        super(WarmupCosineWithHardRestartsSchedule, self).__init__(warmup=warmup, t_total=t_total, cycles=cycles, **kw)
-        assert(cycles >= 1.)
+        super(WarmupCosineWithHardRestartsSchedule, self).__init__(warmup=warmup,
+                                                                   t_total=t_total,
+                                                                   cycles=cycles,
+                                                                   **kw)
+        assert (cycles >= 1.)
 
     def get_lr_(self, progress):
         if progress < self.warmup:
             return progress / self.warmup
         else:
-            progress = (progress - self.warmup) / (1 - self.warmup)     # progress after warmup
+            progress = (progress - self.warmup) / (1 - self.warmup)    # progress after warmup
             ret = 0.5 * (1. + math.cos(math.pi * ((self.cycles * progress) % 1)))
             return ret
 
@@ -134,17 +141,21 @@ class WarmupCosineWithWarmupRestartsSchedule(WarmupCosineWithHardRestartsSchedul
     Every part follows a schedule with the first `warmup` fraction of the training steps linearly increasing from 0. to 1.,
     followed by a learning rate decreasing from 1. to 0. following a cosine curve.
     """
+
     def __init__(self, warmup=0.002, t_total=-1, cycles=1., **kw):
-        assert(warmup * cycles < 1.)
+        assert (warmup * cycles < 1.)
         warmup = warmup * cycles if warmup >= 0 else warmup
-        super(WarmupCosineWithWarmupRestartsSchedule, self).__init__(warmup=warmup, t_total=t_total, cycles=cycles, **kw)
+        super(WarmupCosineWithWarmupRestartsSchedule, self).__init__(warmup=warmup,
+                                                                     t_total=t_total,
+                                                                     cycles=cycles,
+                                                                     **kw)
 
     def get_lr_(self, progress):
         progress = progress * self.cycles % 1.
         if progress < self.warmup:
             return progress / self.warmup
         else:
-            progress = (progress - self.warmup) / (1 - self.warmup)     # progress after warmup
+            progress = (progress - self.warmup) / (1 - self.warmup)    # progress after warmup
             ret = 0.5 * (1. + math.cos(math.pi * progress))
             return ret
 
@@ -154,6 +165,7 @@ class WarmupConstantSchedule(_LRSchedule):
     Linearly increases learning rate from 0 to 1 over `warmup` fraction of training steps.
     Keeps learning rate equal to 1. after warmup.
     """
+
     def get_lr_(self, progress):
         if progress < self.warmup:
             return progress / self.warmup
@@ -166,6 +178,7 @@ class WarmupLinearSchedule(_LRSchedule):
     Linearly decreases learning rate from 1. to 0. over remaining `1 - warmup` steps.
     """
     warn_t_total = True
+
     def get_lr_(self, progress):
         if progress < self.warmup:
             return progress / self.warmup
@@ -173,8 +186,8 @@ class WarmupLinearSchedule(_LRSchedule):
 
 
 SCHEDULES = {
-    None:       ConstantLR,
-    "none":     ConstantLR,
+    None: ConstantLR,
+    "none": ConstantLR,
     "warmup_cosine": WarmupCosineSchedule,
     "warmup_constant": WarmupConstantSchedule,
     "warmup_linear": WarmupLinearSchedule
@@ -198,8 +211,19 @@ class BertAdam(Optimizer):
         weight_decay: Weight decay. Default: 0.01
         max_grad_norm: Maximum norm for the gradients (-1 means no clipping). Default: 1.0
     """
-    def __init__(self, params, lr=required, warmup=-1, t_total=-1, schedule='warmup_linear',
-                 b1=0.9, b2=0.999, e=1e-6, weight_decay=0.01, max_grad_norm=1.0, **kwargs):
+
+    def __init__(self,
+                 params,
+                 lr=required,
+                 warmup=-1,
+                 t_total=-1,
+                 schedule='warmup_linear',
+                 b1=0.9,
+                 b2=0.999,
+                 e=1e-6,
+                 weight_decay=0.01,
+                 max_grad_norm=1.0,
+                 **kwargs):
         # print(f'lr = {lr}')
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {} - should be >= 0.0".format(lr))
@@ -217,10 +241,15 @@ class BertAdam(Optimizer):
             schedule = schedule_type(warmup=warmup, t_total=t_total)
         else:
             if warmup != -1 or t_total != -1:
-                logger.warning("warmup and t_total on the optimizer are ineffective when _LRSchedule object is provided as schedule. "
-                               "Please specify custom warmup and t_total in _LRSchedule object.")
-        defaults = dict(lr=lr, schedule=schedule,
-                        b1=b1, b2=b2, e=e, weight_decay=weight_decay,
+                logger.warning(
+                    "warmup and t_total on the optimizer are ineffective when _LRSchedule object is provided as schedule. "
+                    "Please specify custom warmup and t_total in _LRSchedule object.")
+        defaults = dict(lr=lr,
+                        schedule=schedule,
+                        b1=b1,
+                        b2=b2,
+                        e=e,
+                        weight_decay=weight_decay,
                         max_grad_norm=max_grad_norm)
         super(BertAdam, self).__init__(params, defaults)
 
@@ -253,7 +282,9 @@ class BertAdam(Optimizer):
                     continue
                 grad = p.grad.data
                 if grad.is_sparse:
-                    raise RuntimeError('Adam does not support sparse gradients, please consider SparseAdam instead')
+                    raise RuntimeError(
+                        'Adam does not support sparse gradients, please consider SparseAdam instead'
+                    )
 
                 state = self.state[p]
 
@@ -292,7 +323,6 @@ class BertAdam(Optimizer):
                 # print(f'lr_scheduled0={lr_scheduled}')
                 lr_scheduled *= group['schedule'].get_lr(state['step'])
                 # print(f'lr_scheduled1={lr_scheduled}')  # 0
-
 
                 update_with_lr = lr_scheduled * update
                 # print(f'lr_scheduled2={lr_scheduled}')
