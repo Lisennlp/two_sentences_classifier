@@ -382,8 +382,6 @@ def main():
         all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
         all_example_ids = torch.tensor([f.example_id for f in features], dtype=torch.long)
 
-        # all_position_ids = torch.tensor([f.position_ids for f in features], dtype=torch.long)
-
         if task_name in ['train', 'eval']:
             all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
             datas = TensorDataset(all_example_ids, all_input_ids, all_input_mask, all_segment_ids,
