@@ -10,6 +10,8 @@ import argparse
 import random
 from itertools import chain
 from tqdm import tqdm, trange
+from collections import defaultdict
+
 import numpy as np
 import pandas as pd
 import torch
@@ -18,7 +20,7 @@ from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import classification_report
 
 import tokenization
-from modeling import BertConfig, TwoSentenceClassifier
+from modeling import BertConfig, ThreeCategoriesClassifier
 from optimization import BertAdam
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -33,12 +35,13 @@ CONFIG_NAME = 'bert_config.json'
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
-    def __init__(self, id, text_a, text_b=None, label=None, name=None):
+    def __init__(self, id, text_a, text_b=None, label=None, name=None, persons=None):
         self.id = id
         self.text_a = text_a
         self.text_b = text_b
         self.label = label
         self.name = name
+        self.persons = persons
 
 
 class InputFeatures(object):
@@ -69,7 +72,6 @@ class DataProcessor(object):
     def read_novel_examples(self, path, top_n=5, task_name='train'):
         examples = []
         example_map_ids = {}
-        zero, one = 0, 0
         with open(path, 'r', encoding='utf-8') as f:
             for index, line in enumerate(f):
                 line = line.replace('\n', '').split('\t')
@@ -77,19 +79,19 @@ class DataProcessor(object):
                 assert len(paras) == 2
                 text_a = paras[0].split('||')[:int(top_n)]
                 text_b = paras[1].split('||')[:int(top_n)]
-                label = line[2]
-                assert int(label) in [0, 1]
+                label = int(line[2])
+                assert label in [0, 1]
                 if label:
-                    if one > 4000:
-                        continue
-                    one += 1
-                else:
-                    zero += 1
+                    person_names = line[-1].split('||')
+                    # print(f'person_names = {person_names}')
+                    if person_names[0] == person_names[1]:
+                        label = 2
                 example = InputExample(id=index,
                                        text_a=text_a,
                                        text_b=text_b,
-                                       label=int(label),
-                                       name=line[-1])
+                                       label=label,
+                                       name=line[-2],
+                                       persons=line[-1])
                 examples.append(example)
                 if task_name != 'train':
                     example_map_ids[index] = example
@@ -101,9 +103,7 @@ class DataProcessor(object):
         all_examples = []
         for root, path_dir, file_names in os.walk(dir):
             for file_name in file_names:
-                # if file_name.startswith('speech') and file_name.endswith('000'):
                 if file_name.endswith('001'):
-
                     file_abs_path = os.path.join(root, file_name)
                     examples, _ = self.read_novel_examples(file_abs_path, top_n=top_n)
                     all_examples.extend(examples)
@@ -148,27 +148,34 @@ def create_fake_data_features(data_size, max_seq_length):
 def convert_examples_to_features(examples, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
     features = []
-    lt_7, len_gt_2, len_lt_1, len_1_2 = 0, 0, 0, 0
+    sent_length_counter = defaultdict(int)
     for (ex_index, example) in enumerate(examples):
         input_ids, input_masks, segment_ids = [], [], []
         min_length = min(len(example.text_b), len(example.text_a))
-        if min_length < 7:
-            lt_7 += 1
         text_a = example.text_a[:min_length]
         text_b = example.text_b[:min_length]
-
         for i, sent in enumerate(chain(text_a, text_b)):
-            sent_tokens = ['[CLS]'] + tokenizer.tokenize(sent)[:max_seq_length - 2] + ['[SEP]']
-            length = len(sent_tokens)
-            if 150 > length > 100:
-                len_1_2 += 1
-            elif length <= 100:
-                len_lt_1 += 1
+            sent_length = len(sent)
+            sents = sent.split('""')
+            sents[0] = sents[0][:120] + '"'
+            sents[0] = sents[1][:120] + '"'
+            sents_token = [tokenizer.tokenize(s) for s in sents]
+            sent_segment_ids = [0] * (len(sents_token[0]) + 2) + [1] * (len(sents_token[1]) + 1)
+            sents_token = sents_token[0] + ['[SEP]'] + sents_token[1]
+            sents_token = sents_token[:max_seq_length - 2]
+            sent_segment_ids = sent_segment_ids[:max_seq_length]
+            sents_token = ['[CLS]'] + sents_token + ['[SEP]']
+            if 100 > sent_length >= 50:
+                sent_length_counter['100>50'] += 1
+            elif 50 > sent_length:
+                sent_length_counter['<50'] += 1
+            elif 180 > sent_length >= 100:
+                sent_length_counter['180>100'] += 1
             else:
-                len_gt_2 += 1
-            sent_segment_ids = [0] * length
+                sent_length_counter['>180'] += 1
+            length = len(sents_token)
             sent_input_masks = [1] * length
-            sent_input_ids = tokenizer.convert_tokens_to_ids(sent_tokens)
+            sent_input_ids = tokenizer.convert_tokens_to_ids(sents_token)
 
             while length < max_seq_length:
                 sent_input_ids.append(0)
@@ -191,8 +198,8 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
     print(f'feature example input_mask：{features[-1].input_mask}')
     print(f'feature example segment_ids：{features[-1].segment_ids}')
 
-    print(f'total features {len(features)} lt_7 {lt_7}')
-    print(len_gt_2, len_lt_1, len_1_2)
+    print(f'total features {len(features)}')
+    print(sent_length_counter)
     return features
 
 
@@ -434,81 +441,114 @@ def main():
             dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
         return dataloader
 
-    def accuracy(example_ids, logits, probs=None):
-        logits = logits.tolist()
-        example_ids = example_ids.tolist()
-        assert len(logits) == len(example_ids)
-        classify_name = ['no_answer', 'yes_answer']
-        labels, text_a, text_b, novel_names = [], [], [], []
+    def accuracy(example_ids, logits, labels, probs=None, positive=False):
+        if isinstance(logits, torch.Tensor):
+            logits = logits.tolist()
+        if isinstance(example_ids, torch.Tensor):
+            example_ids = example_ids.tolist()
+        assert len(logits) == len(example_ids) == len(labels)
+        classify_name = ['dif', 'part_same', 'full_same'] if positive else ['dif', 'same']
+        text_a, text_b, novel_names, persons = [], [], [], []
         for i in example_ids:
             example = example_map_ids[i]
-            labels.append(example.label)
+            # labels.append(example.label)
             text_a.append("||".join(example.text_a))
             text_b.append("||".join(example.text_b))
             novel_names.append(example.name)
-
+            persons.append(example.persons)
         write_data = pd.DataFrame({
             "text_a": text_a,
             "text_b": text_b,
             "labels": labels,
             "logits": logits,
-            "novel_names": novel_names
+            "novel_names": novel_names,
+            "persons": persons
         })
         write_data['yes_or_no'] = write_data['labels'] == write_data['logits']
         if probs is not None:
-            write_data['logits'] = probs.tolist()
-        write_data.to_csv(args.result_file, index=False)
+            if isinstance(probs, torch.Tensor):
+                probs = probs.tolist()
+            write_data['logits'] = probs
+        # write_data.to_csv(os.path.join(args.output_dir, f'{positive}.csv'), index=False)
         assert len(labels) == len(logits)
         result = classification_report(labels, logits, target_names=classify_name)
+        print(f'\n{result}')
         return result
 
     def eval_model(model, eval_dataloader, device):
         model.eval()
         eval_loss = 0
+        all_first_logits, all_second_logits = [], []
+        all_first_example_ids, all_second_example_ids = [], []
+        all_first_labels, all_second_labels = [], []
         all_logits = []
-        all_example_ids = []
-        all_probs = []
-        accuracy_result = None
-        batch_count = 0
+        all_first_probs, all_sencond_probs = [], []
         for step, batch in enumerate(tqdm(eval_dataloader, desc="evaluating")):
             example_ids, input_ids, input_mask, segment_ids, label_ids = batch
             if not args.do_train:
                 label_ids = None
             with torch.no_grad():
                 tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, labels=label_ids)
-                argmax_logits = torch.argmax(logits, dim=1)
-                first_indices = torch.arange(argmax_logits.size()[0])
-                logits_probs = logits[first_indices, argmax_logits]
+                second_argmax_logits = None
+                first_labels = torch.clamp(label_ids, max=1)
+                first_argmax_logits = torch.argmax(logits[0], dim=1)
+                first_indices = first_argmax_logits[first_argmax_logits == 1]
+                if first_indices.sum():
+                    sencond_logits = logits[1][first_argmax_logits == 1]
+                    second_argmax_logits = torch.argmax(sencond_logits, dim=1)
+                    second_labels = label_ids[first_argmax_logits == 1]
+                    second_example_ids = example_ids[first_argmax_logits == 1]
+                    second_indices = torch.arange(second_argmax_logits.size()[0])
+                    second_logits_probs = sencond_logits[second_indices, second_argmax_logits]
+                    second_argmax_logits += 1
+                else:
+                    second_labels, second_logits_probs, second_example_ids = [
+                        torch.tensor([]) for i in range(3)
+                    ]
+
+            first_indices = torch.arange(first_argmax_logits.size()[0])
+            first_logits_probs = logits[0][first_indices, first_argmax_logits]
             if args.do_train:
                 eval_loss += tmp_eval_loss.mean().item()
-                all_logits.append(argmax_logits)
-                all_example_ids.append(example_ids)
-            else:
-                all_logits.append(argmax_logits)
-                all_example_ids.append(example_ids)
-                all_probs.append(logits_probs)
-            batch_count += 1
-        if all_logits:
+                all_first_logits.extend(first_argmax_logits.tolist())
+                all_first_labels.extend(first_labels.tolist())
+                if isinstance(second_argmax_logits, torch.Tensor):
+                    all_second_logits.extend(second_argmax_logits.tolist())
+                all_first_example_ids.append(example_ids)
+                all_second_labels.extend(second_labels.tolist())
+                all_second_example_ids.extend(second_example_ids.tolist())
+                all_logits.append(first_argmax_logits)
+                all_first_probs.append(first_logits_probs)
+                all_sencond_probs.extend(second_logits_probs.tolist())
+
+        if all_first_logits:
             all_logits = torch.cat(all_logits, dim=0)
-            all_example_ids = torch.cat(all_example_ids, dim=0)
-            all_probs = torch.cat(all_probs, dim=0) if len(all_probs) else None
-            accuracy_result = accuracy(all_example_ids, all_logits, probs=all_probs)
-        eval_loss /= batch_count
-        return eval_loss, accuracy_result, all_logits
+            all_example_ids = torch.cat(all_first_example_ids, dim=0)
+            all_first_probs = torch.cat(all_first_probs, dim=0) if len(all_first_probs) else None
+            accuracy(all_example_ids,
+                     all_logits,
+                     labels=all_first_labels,
+                     probs=all_first_probs,
+                     positive=False)
+        if all_second_logits:
+            accuracy(all_second_example_ids,
+                     all_second_logits,
+                     labels=all_second_labels,
+                     probs=all_sencond_probs,
+                     positive=True)
+        eval_loss /= (step + 1)
+        return eval_loss
 
     train_dataloader = None
     num_train_steps = None
     if args.do_train:
-        # train_dataloader = prepare_fake_data(400, args.max_seq_length, 'train')
         train_dataloader = prepare_data(args, task_name='train')
         num_train_steps = int(
             len(train_dataloader) / args.gradient_accumulation_steps * args.num_train_epochs)
-
-    model = TwoSentenceClassifier.from_pretrained(args.bert_model,
-                                                  num_labels=data_processor.num_labels)
+    model = ThreeCategoriesClassifier.from_pretrained(args.bert_model,
+                                                      num_labels=data_processor.num_labels)
     if args.fp16:
         model.half()
-
     if args.do_predict:
         model_path = os.path.join(args.output_dir, WEIGHTS_NAME)
         new_state_dict = torch.load(model_path)
@@ -516,7 +556,6 @@ def main():
             (k[7:], v) if k.startswith('module') else (k, v) for k, v in new_state_dict.items()
         ])
         model.load_state_dict(new_state_dict)
-
     model.to(device)
     if args.local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(model,
@@ -524,7 +563,6 @@ def main():
                                                           output_device=args.local_rank)
     elif n_gpu > 1:
         model = torch.nn.DataParallel(model)
-
     if args.fp16:
         param_optimizer = [(n, param.clone().detach().to('cpu').float().requires_grad_())
                            for n, param in model.named_parameters()]
@@ -541,10 +579,7 @@ def main():
         'params': [p for n, p in param_optimizer if n in no_decay],
         'weight_decay_rate': 0.0
     }]
-
     eval_dataloader, example_map_ids = prepare_data(args, task_name='eval')
-
-    global_step = 0
     if args.do_train:
         optimizer = BertAdam(optimizer_grouped_parameters,
                              lr=args.learning_rate,
@@ -552,9 +587,8 @@ def main():
                              t_total=num_train_steps)
 
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-        eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
-        logger.info(f'初始开发集loss: {eval_loss}')
-        print(f'{acc}')
+        # eval_loss = eval_model(model, eval_dataloader, device)
+        # logger.info(f'初始开发集loss: {eval_loss}')
         model.train()
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             torch.cuda.empty_cache()
@@ -570,21 +604,17 @@ def main():
                     loss = loss * args.loss_scale
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
-
                 loss.backward()
                 tr_loss += loss.item()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()
                     model.zero_grad()
-                    global_step += 1
                 train_batch_count += 1
             tr_loss /= train_batch_count
-            eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
-
+            eval_loss = eval_model(model, eval_dataloader, device)
             logger.info(
                 f'训练loss: {tr_loss}, 开发集loss：{eval_loss} 训练轮数：{epoch + 1}/{int(args.num_train_epochs)}'
             )
-            logger.info(f'acc={acc}')
             model_to_save = model.module if hasattr(model, 'module') else model
             torch.save(model.state_dict(), model_save_path)
             if epoch == 0:
@@ -592,8 +622,7 @@ def main():
                 tokenizer.save_vocabulary(args.output_dir)
 
     if args.do_predict:
-        _, result, _ = eval_model(model, eval_dataloader, device)
-        print(result)
+        eval_model(model, eval_dataloader, device)
 
 
 if __name__ == "__main__":

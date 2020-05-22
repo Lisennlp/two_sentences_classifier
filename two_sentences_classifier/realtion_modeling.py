@@ -736,10 +736,10 @@ class BertModel(BertPreTrainedModel):
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers)
         sequence_output = encoded_layers[-1]    # 最后一层的隐层状态
-        pooled_output = self.pooler(sequence_output)
+        # pooled_output = self.pooler(sequence_output)
         if not output_all_encoded_layers:
             encoded_layers = encoded_layers[-1]
-        return encoded_layers, pooled_output
+        return encoded_layers, sequence_output
 
 
 class BertForPreTraining(BertPreTrainedModel):
@@ -907,85 +907,6 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
             return seq_relationship_score
 
 
-# class TwoSentenceClassifier(BertPreTrainedModel):
-
-#     def __init__(self, config, num_labels):
-#         super(TwoSentenceClassifier, self).__init__(config)
-#         self.num_labels = num_labels
-#         self.bert = BertModel(config)
-#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-#         # self.reduce_dimension = nn.Linear(config.hidden_size, config.reduce_dim)
-#         self.classifier = nn.Linear(config.hidden_size, num_labels)
-#         # self.LayerNorm = BertLayerNorm(3 * config.hidden_size, eps=1e-12)
-#         # 初始化参数
-#         self.apply(self.init_bert_weights)
-
-#     def forward(self,
-#                 input_ids,
-#                 token_type_ids,
-#                 attention_mask,
-#                 position_ids=None,
-#                 labels=None,
-#                 embedding=False):
-#         input_ids_size = input_ids.size()
-#         # bsz x 2 x len -> bsz*2 x len
-#         input_ids = input_ids.view(input_ids_size[0] * input_ids_size[1], input_ids_size[2])
-#         attention_mask = attention_mask.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         token_type_ids = token_type_ids.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         if position_ids is not None:
-#             position_ids = position_ids.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         # bsz x 1 -> bsz
-#         if labels is not None:
-#             labels = labels.view(-1)
-#         loss_fn = torch.nn.CrossEntropyLoss()
-#         # sequence_output: bsz*14 x len x 768,  attention_mask:  bsz*14 x len
-#         sequence_output, _ = self.bert(input_ids,
-#                                        token_type_ids,
-#                                        attention_mask,
-#                                        position_ids,
-#                                        output_all_encoded_layers=False)
-#         # bsz*num_labels x 768
-#         attention_mask_expanded = attention_mask.unsqueeze(-1).expand(
-#             sequence_output.size()).float()
-#         mask_sequence_output = sequence_output * attention_mask_expanded
-#         sum_mask_sequence_output = mask_sequence_output.sum(1)
-#         sum_attention_mask_expanded = attention_mask_expanded.sum(1)
-#         sum_attention_mask_expanded = torch.clamp(sum_attention_mask_expanded, min=1e-9)
-#         # output_vectors: bsz*14 x 1 x 768
-#         output_vectors = sum_mask_sequence_output / sum_attention_mask_expanded
-#         # -> bsz x 14 x 768
-#         output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
-#         # -> 2个bsz x 7 x 768
-#         # output_vectors = self.reduce_dimension(output_vectors)
-#         # output_vectors = self.LayerNorm(output_vectors)
-#         output_vectors = self.dropout(output_vectors)
-#         if embedding:
-#             return output_vectors
-#         sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
-#         # -> 2个bsz x 768
-#         # print(f'sentence_a_vector = {sentence_a_vector.shape}')
-#         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
-#         sentence_b_vector = sentence_b_vector.mean(1).squeeze(1)
-#         # bsz*num_labels x 768  -> # bsz*num_labels x 1
-#         sentence_all_vector = torch.abs(sentence_a_vector - sentence_b_vector)
-#         # sentence_all_vector: bsz x 3*768
-#         # sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
-#         #                                 dim=1)
-
-#         # output_vectors = self.LayerNorm(output_vectors)
-#         sentence_all_vector = self.dropout(sentence_all_vector)
-#         # bsz x 2
-#         logits = self.classifier(sentence_all_vector)
-#         if labels is not None:
-#             loss = loss_fn(logits, labels)
-#             return loss, logits
-#         else:
-#             return _, torch.softmax(logits, dim=-1)
-
-
 class TwoSentenceClassifier(BertPreTrainedModel):
 
     def __init__(self, config, num_labels):
@@ -1004,7 +925,6 @@ class TwoSentenceClassifier(BertPreTrainedModel):
                 position_ids=None,
                 labels=None,
                 embedding=False):
-        # bsz x 14
         input_ids_size = input_ids.size()
         # bsz x 2 x len -> bsz*2 x len
         input_ids = input_ids.view(input_ids_size[0] * input_ids_size[1], input_ids_size[2])
@@ -1020,21 +940,29 @@ class TwoSentenceClassifier(BertPreTrainedModel):
             labels = labels.view(-1)
         loss_fn = torch.nn.CrossEntropyLoss()
         # sequence_output: bsz*14 x len x 768,  attention_mask:  bsz*14 x len
-        sequence_output, _ = self.bert(input_ids,
+        _, sequence_output = self.bert(input_ids,
                                        token_type_ids,
                                        attention_mask,
                                        position_ids,
                                        output_all_encoded_layers=False)
-  
-        # CLS token embeddings: bsz*14 x 1 x 768
-        output_vectors = sequence_output[:, 0, :]
+        # bsz*num_labels x 768
+        attention_mask_expanded = attention_mask.unsqueeze(-1).expand(
+            sequence_output.size()).float()
+        mask_sequence_output = sequence_output * attention_mask_expanded
+        sum_mask_sequence_output = mask_sequence_output.sum(1)
+        sum_attention_mask_expanded = attention_mask_expanded.sum(1)
+        sum_attention_mask_expanded = torch.clamp(sum_attention_mask_expanded, min=1e-9)
+        # output_vectors: bsz*14 x 1 x 768
+        output_vectors = sum_mask_sequence_output / sum_attention_mask_expanded
         # -> bsz x 14 x 768
         output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
+        # -> 2个bsz x 7 x 768
         if embedding:
             return output_vectors
-        # -> bsz x 7 x 768
+
         sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
         # -> 2个bsz x 768
+        # print(f'sentence_a_vector = {sentence_a_vector.shape}')
         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
         sentence_b_vector = sentence_b_vector.mean(1).squeeze(1)
         # bsz*num_labels x 768  -> # bsz*num_labels x 1
@@ -1042,8 +970,6 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         # sentence_all_vector: bsz x 3*768
         sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
                                         dim=1)
-
-        # output_vectors = self.LayerNorm(output_vectors)
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 2
         logits = self.classifier(sentence_all_vector)
@@ -1067,7 +993,6 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
         self.num_labels = num_labels
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.reduce_dimension = nn.Linear(config.hidden_size, config.reduce_dim)
         self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
 
         # 初始化参数
@@ -1095,7 +1020,7 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
             labels = labels.view(-1)
         loss_fn = torch.nn.CrossEntropyLoss()
         # sequence_output: bsz*14 x len x 768,  attention_mask:  bsz*14 x len
-        sequence_output, _ = self.bert(input_ids,
+        _, sequence_output = self.bert(input_ids,
                                        token_type_ids,
                                        attention_mask,
                                        position_ids,
@@ -1111,7 +1036,6 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
         output_vectors = sum_mask_sequence_output / sum_attention_mask_expanded
         # -> bsz x 14 x 768
         output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
-
         # -> 2个bsz x 7 x 768
         if embedding:
             return output_vectors
@@ -1129,33 +1053,17 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 4
         logits = self.classifier(sentence_all_vector)
+        first_logits, sencond_logits = torch.chunk(logits, 2, dim=-1)
+
+        first_labels = torch.clamp(labels, max=1)
+        second_labels = labels[first_labels == 1]
+        sencond_logits_label = sencond_logits[first_labels == 1]
         if labels is not None:
-            loss = loss_fn(logits, labels)
-            return loss, logits
-        else:
-            return _, torch.softmax(logits, dim=-1)
-
-
-class BertForSequenceClassification(BertPreTrainedModel):
-
-    def __init__(self, config, num_labels):
-        super(BertForSequenceClassification, self).__init__(config)
-        self.num_labels = num_labels
-        self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, num_labels)
-        # 初始化参数
-        self.apply(self.init_bert_weights)
-
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None, position_ids=None):
-        # 取得是bert解码层最后一层的第一个token的向量
-        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False, position_ids=position_ids)
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
-
-        if labels is not None:
-            loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-            return loss, logits
+            if second_labels.sum():
+                second_labels -= 1
+                loss = loss_fn(first_logits, first_labels) + 0.3 * loss_fn(sencond_logits_label, second_labels)
+            else:
+                loss = loss_fn(first_logits, first_labels)
+            return loss, (first_logits.softmax(-1), sencond_logits.softmax(-1))
         else:
             return _, torch.softmax(logits, dim=-1)

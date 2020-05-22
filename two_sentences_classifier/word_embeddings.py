@@ -53,9 +53,10 @@ class EmbeddingsModel(object):
         all_input_ids, all_input_mask, all_segment_ids = self.convert_examples_to_features(
             sentences)
         output_vectors = []
+        print(f'all_input_ids = {len(all_input_ids)}')
         with torch.no_grad():
-            for i in range(len(all_input_ids)):
-                if i % batch_size == 0 or (i == len(all_input_ids) - 1 and i > batch_size):
+            for i in range(0, len(all_input_ids), batch_size):
+                if i % batch_size == 0:
                     input_ids = torch.cat(all_input_ids[i:i + batch_size],
                                           dim=0).to(self.device).unsqueeze(0)
                     segment_ids = torch.cat(all_segment_ids[i:i + batch_size],
