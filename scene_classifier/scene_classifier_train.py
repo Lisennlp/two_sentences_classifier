@@ -5,10 +5,10 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import sys
 import logging
 import argparse
 import random
-from itertools import chain
 from tqdm import tqdm, trange
 import numpy as np
 import pandas as pd
@@ -17,12 +17,15 @@ from torch.utils.data import TensorDataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import classification_report
 from collections import defaultdict
-from parallel import BalancedDataParallel
 
+sys.path.append("../common_file")
+
+from parallel import BalancedDataParallel
 import tokenization
 from modeling import BertConfig, BertForSequenceClassification
 from optimization import BertAdam
 from data_untils import get_span, filter_lines, normalize, is_chapter_name
+
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -638,4 +641,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()

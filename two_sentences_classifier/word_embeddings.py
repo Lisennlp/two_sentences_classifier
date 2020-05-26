@@ -1,7 +1,11 @@
 """Embeddings"""
 
 import os
+import sys
 import torch
+
+sys.path.append("../common_file")
+
 import tokenization
 from modeling import TwoSentenceClassifier, BertConfig
 

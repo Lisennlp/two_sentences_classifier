@@ -5,6 +5,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import sys
 import logging
 import argparse
 import random
@@ -16,6 +17,8 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import classification_report
+
+sys.path.append("../common_file")
 
 import tokenization
 from modeling import BertConfig, TwoSentenceClassifier

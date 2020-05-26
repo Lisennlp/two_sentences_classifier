@@ -3,7 +3,7 @@
 if [ "$1" = "train" ]; then
         echo "start to train......"
 
-        CUDA_VISIBLE_DEVICES=0,1 python ../two_sentences_classifier/scene_classifier_train.py \
+        CUDA_VISIBLE_DEVICES=0,1 python ../scene_classifier/scene_classifier_train.py \
                                     --vocab_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/vocab.txt    \
                                     --bert_config_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/bert_config.json   \
                                     --do_lower_case    \
@@ -26,7 +26,7 @@ if [ "$1" = "train" ]; then
 elif [ "$1" = "eval" ];then
         echo "start to eval......"
 
-        CUDA_VISIBLE_DEVICES=0,1 python ../two_sentences_classifier/scene_classifier_train.py \
+        CUDA_VISIBLE_DEVICES=0,1 python ../scene_classifier/scene_classifier_train.py \
                                     --vocab_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/vocab.txt    \
                                     --bert_config_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/bert_config.json   \
                                     --do_lower_case    \
@@ -49,7 +49,7 @@ elif [ "$1" = "eval" ];then
 elif [ "$1" = "predict" ];then
         echo "start to predict......"
 
-        CUDA_VISIBLE_DEVICES=3,7 python ../two_sentences_classifier/scene_classifier_train.py \
+        CUDA_VISIBLE_DEVICES=3,7 python ../scene_classifier/scene_classifier_train.py \
                                     --vocab_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/vocab.txt    \
                                     --bert_config_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/bert_config.json   \
                                     --do_lower_case    \

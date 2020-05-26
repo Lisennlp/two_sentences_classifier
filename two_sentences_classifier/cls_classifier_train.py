@@ -17,8 +17,9 @@ from torch.utils.data import TensorDataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import classification_report
 from collections import defaultdict
-from parallel import BalancedDataParallel
 
+sys.path.append("../common_file")
+from parallel import BalancedDataParalle
 import tokenization
 from modeling import BertConfig, BertForSequenceClassification
 from optimization import BertAdam
