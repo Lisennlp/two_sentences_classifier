@@ -1,0 +1,17 @@
+CUDA_VISIBLE_DEVICES=0,1 python ../two_sentences_classifier/add_sentences_relations.py \
+                                  --vocab_file /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/vocab.txt    \
+                                  --bert_config_file /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/bert_config.json   \
+                                  --do_lower_case    \
+                                  --train_file /nas/xd/data/novels/figure_relation/small.data.train \
+                                  --eval_file  /nas/xd/data/novels/figure_relation/small.data.dev   \
+                                  --train_batch_size 32   \
+                                  --eval_batch_size 8 \
+                                  --learning_rate 5e-5   \
+                                  --num_train_epochs 6   \
+                                  --top_n 7   \
+                                  --num_labels 4   \
+                                  --output_dir ./add_sentences_relation_0513_7  \
+                                  --bert_model /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/   \
+                                  --init_checkpoint /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/pytorch_model.bin   \
+                                  --do_train   \
+                                  --gradient_accumulation_steps 4 3>&2 2>&1 1>&3 | tee logs/add_sentences_relation_0513_7.log

@@ -19,9 +19,11 @@ from sklearn.metrics import classification_report
 from collections import defaultdict
 from parallel import BalancedDataParallel
 
+
 import tokenization
 from modeling import BertConfig, TwoSentenceClassifier
 from optimization import BertAdam
+
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -143,36 +145,6 @@ class DataProcessor(object):
         return ''.join(text)
 
 
-def create_fake_data_features(data_size, max_seq_length):
-
-    # datas = [[[random.randint(1, 2000) for j in range(random.randint(100, max_seq_length))] for i in range(2)] for k in range(data_size)]
-    features = []
-    for i in range(data_size):
-        input_masks, segment_ids = [], []
-        sentences_ids = [[
-            random.randint(1, 2000) for j in range(random.randint(100, max_seq_length))
-        ] for i in range(2)]
-        for i, sentence_ids in enumerate(sentences_ids):
-            sentence_length = len(sentence_ids)
-            input_masks.append([1] * sentence_length)
-            segment_ids.append([0] * sentence_length)
-
-            while sentence_length < max_seq_length:
-                sentences_ids[i].append(0)
-                input_masks[i].append(0)
-                segment_ids[i].append(0)
-                sentence_length += 1
-        label_id = random.randint(0, 1)
-        features.append(
-            InputFeatures(input_ids=sentences_ids,
-                          input_mask=input_masks,
-                          segment_ids=segment_ids,
-                          label_id=label_id,
-                          example_id=i))
-    features = features[:len(features) // 3 * 3]
-    return features
-
-
 def convert_examples_to_features(examples, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
     features = []
@@ -189,7 +161,6 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
                 break
             sents[0] = sents[0][:120].replace('"', '')
             sents[1] = sents[1][:120].replace('"', '')
-            clear_word_index = [random.randint(0, len(sents[0])) for i in range(2)]
             sents_token = [tokenizer.tokenize(s) for s in sents]
             sent_segment_ids = [0] * (len(sents_token[0]) + 2) + [1] * (len(sents_token[1]) + 1)
             sents_token = sents_token[0] + ['[SEP]'] + sents_token[1]
@@ -266,6 +237,10 @@ def main():
                         type=float,
                         required=True,
                         help="higher than threshold is classify 1,")
+    parser.add_argument("--reduce_dim",
+                        default=64,
+                        type=int,
+                        help="from hidden size to this dimensions, reduce dim")
     parser.add_argument("--bert_config_file",
                         default=None,
                         type=str,
@@ -407,6 +382,8 @@ def main():
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
+    bert_config.reduce_dim = args.reduce_dim
+
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -592,8 +569,8 @@ def main():
                                                           device_ids=[args.local_rank],
                                                           output_device=args.local_rank)
     elif n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-        # model = BalancedDataParallel(1, model, dim=0).to(device)
+        # model = torch.nn.DataParallel(model)
+        model = BalancedDataParallel(1, model, dim=0).to(device)
 
     if args.fp16:
         param_optimizer = [(n, param.clone().detach().to('cpu').float().requires_grad_())
