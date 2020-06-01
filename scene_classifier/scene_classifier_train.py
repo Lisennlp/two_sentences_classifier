@@ -488,7 +488,7 @@ def main():
         all_label_ids = []
         all_probs = []
         scene_cut_indexs = []
-
+        is_cut_probs = []
         for step, batch in enumerate(tqdm(predict_dataloader, desc="predicting")):
             example_ids, input_ids, input_mask, segment_ids, label_ids = batch
             # print(f'input_ids = {input_ids.shape}')
@@ -506,6 +506,7 @@ def main():
                 for label, prob, pred_label in zip(label_ids.tolist(), logits_probs.tolist(), argmax_logits.tolist()):
                     if pred_label:
                         scene_cut_indexs.append(label)
+                        is_cut_probs.append(prob)
 
                     # print(f'prob = {prob}')
                     # print(f'pred label = {pred_label}')
@@ -515,7 +516,7 @@ def main():
         print(f'all_probs = {len(all_probs)}')
 
         assert len(all_label_ids) == len(all_probs)
-        return scene_cut_indexs
+        return scene_cut_indexs, is_cut_probs
 
     if args.do_train:
         train_dataloader = prepare_data(args, task_name='train')
@@ -631,10 +632,11 @@ def main():
         #         arg.predict_file = os.path.join(root, file)
 
         predict_dataloader, predict_example_map_ids = prepare_data(args, task_name='predict')
-        scene_cut_indexs = predict_model(model, predict_dataloader, device)
+        scene_cut_indexs, is_cut_probs = predict_model(model, predict_dataloader, device)
+        assert len(scene_cut_indexs) == len(is_cut_probs)
         predict_novel_name = os.path.join(os.path.split(args.predict_file)[0], 'scene_cut_datas', os.path.split(args.predict_file)[-1])
-        for i in scene_cut_indexs:
-            predict_example_map_ids[i] = '########' + predict_example_map_ids[i]
+        for i, index in enumerate(scene_cut_indexs):
+            predict_example_map_ids[index] = f'######## {round(is_cut_probs[i], 3)} {predict_example_map_ids[index]}'
         with open(predict_novel_name, 'w', encoding='utf-8') as f:
             for i, line in enumerate(predict_example_map_ids):
                 f.write(line)

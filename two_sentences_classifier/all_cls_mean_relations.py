@@ -5,6 +5,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import re
 import sys
 import logging
 import argparse
@@ -23,9 +24,8 @@ sys.path.append("../common_file")
 
 from parallel import BalancedDataParallel
 import tokenization
-from modeling import BertConfig, RelationClassifier
+from modeling import BertConfig, TwoSentenceClassifier
 from optimization import BertAdam
-
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -154,21 +154,16 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
     for (ex_index, example) in enumerate(examples):
         input_ids, input_masks, segment_ids = [], [], []
         min_length = min(len(example.text_b), len(example.text_a))
-        text_a = example.text_a[:min_length]
-        text_b = example.text_b[:min_length]
-        for i, sent in enumerate(chain(text_a, text_b)):
+        text_a = [re.split('""|”“', s) for s in example.text_a[:min_length]]
+        text_b = [re.split('""|”“', s) for s in example.text_b[:min_length]]
+
+        for i, sent in enumerate(chain(*text_a, *text_b)):
             sent_length = len(sent)
-            sents = sent.split('""')
-            if len(sents) != 2:
-                break
-            sents[0] = sents[0][:120].replace('"', '')
-            sents[1] = sents[1][:120].replace('"', '')
-            sents_token = [tokenizer.tokenize(s) for s in sents]
-            sent_segment_ids = [0] * (len(sents_token[0]) + 2) + [1] * (len(sents_token[1]) + 1)
-            sents_token = sents_token[0] + ['[SEP]'] + sents_token[1]
-            sents_token = sents_token[:max_seq_length - 2]
-            sent_segment_ids = sent_segment_ids[:max_seq_length]
-            sents_token = ['[CLS]'] + sents_token + ['[SEP]']
+            if sent_length > max_seq_length:
+                sent = sent.split('。')[0] + '。'
+            sent = sent[:max_seq_length - 1].replace('"', '')
+            sents_token = ["[CLS]"] + tokenizer.tokenize(sent)
+            sent_segment_ids = [0] * len(sents_token)
             if 100 > sent_length >= 50:
                 sent_length_counter['100>50'] += 1
             elif 50 > sent_length:
@@ -177,6 +172,7 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
                 sent_length_counter['180>100'] += 1
             else:
                 sent_length_counter['>180'] += 1
+
             length = len(sents_token)
             sent_input_masks = [1] * length
             sent_input_ids = tokenizer.convert_tokens_to_ids(sents_token)
@@ -188,10 +184,11 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
                 length += 1
 
             assert len(sent_segment_ids) == len(sent_input_ids) == len(sent_input_masks)
+
             input_ids.append(sent_input_ids)
             input_masks.append(sent_input_masks)
             segment_ids.append(sent_segment_ids)
-        if len(input_ids) != 14:
+        if len(input_ids) != 28:
             print(f'len {len(input_ids)}')
             continue
 
@@ -236,7 +233,7 @@ def main():
                         help="The predict file path")
     parser.add_argument("--top_n",
                         default=5,
-                        type=int,
+                        type=float,
                         required=True,
                         help="higher than threshold is classify 1,")
     parser.add_argument("--reduce_dim",
@@ -280,11 +277,7 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=180,
-                        type=int,
-                        help="maximum total input sequence length after WordPiece tokenization.")
-    parser.add_argument("--gpu0_size",
-                        default=1,
+                        default=100,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--do_train",
@@ -346,16 +339,6 @@ def main():
 
     args = parser.parse_args()
 
-    def get_fake_features(data_size, max_seq_length):
-        features = create_fake_data_features(data_size=data_size, max_seq_length=max_seq_length)
-        input_ids = [f.input_ids for f in features]
-        input_mask = [f.input_mask for f in features]
-        segment_ids = [f.segment_ids for f in features]
-        label_ids = [f.label_id for f in features]
-        ids = [f.example_id for f in features]
-        data = (input_ids, input_mask, segment_ids, label_ids, ids)
-        return data
-
     data_processor = DataProcessor(args.num_labels)
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -389,7 +372,6 @@ def main():
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
     bert_config.reduce_dim = args.reduce_dim
-
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -445,29 +427,6 @@ def main():
         else:
             dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
         return (dataloader, example_map_ids) if task_name != 'train' else dataloader
-
-    def prepare_fake_data(data_size, max_seq_length, task_name='train'):
-        features = create_fake_data_features(data_size=data_size, max_seq_length=max_seq_length)
-        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-        if task_name in ['train', 'eval']:
-            all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-            datas = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        else:
-            datas = TensorDataset(all_input_ids, all_input_mask, all_segment_ids)
-        if task_name == 'train':
-            if args.local_rank == -1:
-                data_sampler = RandomSampler(datas)
-            else:
-                data_sampler = DistributedSampler(datas)
-            dataloader = DataLoader(datas,
-                                    sampler=data_sampler,
-                                    batch_size=args.train_batch_size,
-                                    drop_last=True)
-        else:
-            dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
-        return dataloader
 
     def accuracy(example_ids, logits, probs=None, data_type='eval'):
         logits = logits.tolist()
@@ -546,7 +505,7 @@ def main():
         num_train_steps = int(
             len(train_dataloader) / args.gradient_accumulation_steps * args.num_train_epochs)
 
-    model = RelationClassifier(bert_config, num_labels=data_processor.num_labels)
+    model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels)
     new_state_dict = model.state_dict()
     init_state_dict = torch.load(os.path.join(args.bert_model, 'pytorch_model.bin'))
     for k, v in init_state_dict.items():
@@ -575,10 +534,8 @@ def main():
                                                           device_ids=[args.local_rank],
                                                           output_device=args.local_rank)
     elif n_gpu > 1:
-        if args.gpu0_size > 0:
-            model = BalancedDataParallel(args.gpu0_size, model, dim=0).to(device)
-        else:
-            model = torch.nn.DataParallel(model)
+        model = torch.nn.DataParallel(model)
+        # model = BalancedDataParallel(1, model, dim=0).to(device)
 
     if args.fp16:
         param_optimizer = [(n, param.clone().detach().to('cpu').float().requires_grad_())
@@ -617,6 +574,10 @@ def main():
             train_batch_count = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="training")):
                 _, input_ids, input_mask, segment_ids, label_ids = batch
+                # print(f'input_ids = {input_ids.shape}')
+                # print(f'segment_ids = {input_ids.shape}')
+                # print(f'input_mask = {input_mask.shape}')
+
                 loss, _ = model(input_ids, segment_ids, input_mask, labels=label_ids)
                 if n_gpu > 1:
                     loss = loss.mean()

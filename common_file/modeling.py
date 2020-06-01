@@ -352,6 +352,9 @@ class BertSelfAttention(nn.Module):
 
 
 class BertSelfOutput(nn.Module):
+    """
+     LayerNorm加入残差归一化
+    """
 
     def __init__(self, config):
         super(BertSelfOutput, self).__init__()
@@ -397,6 +400,9 @@ class BertIntermediate(nn.Module):
 
 
 class BertOutput(nn.Module):
+    """
+    降维至768，残差归一化
+    """
 
     def __init__(self, config):
         super(BertOutput, self).__init__()
@@ -449,13 +455,17 @@ class BertPooler(nn.Module):
     def __init__(self, config):
         super(BertPooler, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        # self.dense_1 = nn.Linear(config.hidden_size, config.hidden_size)
+
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
         first_token_tensor = hidden_states[:, 0]
-        pooled_output = self.dense(first_token_tensor)
+        # first_token_tensor = hidden_states.max(1)[0]
+        # pooled_output = self.dense(first_token_tensor)
+        pooled_output = first_token_tensor
         pooled_output = self.activation(pooled_output)
         return pooled_output
 
@@ -907,158 +917,80 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
             return seq_relationship_score
 
 
-# class TwoSentenceClassifier(BertPreTrainedModel):
+class TwoSentenceClassifier(BertPreTrainedModel):
+    """
+        all token mean -> 拼接  -> dropout0.3 -> 分类
+    """
 
-#     def __init__(self, config, num_labels):
-#         super(TwoSentenceClassifier, self).__init__(config)
-#         self.num_labels = num_labels
-#         self.bert = BertModel(config)
-#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-#         # self.reduce_dimension = nn.Linear(config.hidden_size, config.reduce_dim)
-#         self.classifier = nn.Linear(config.hidden_size, num_labels)
-#         # self.LayerNorm = BertLayerNorm(3 * config.hidden_size, eps=1e-12)
-#         # 初始化参数
-#         self.apply(self.init_bert_weights)
+    def __init__(self, config, num_labels):
+        super(TwoSentenceClassifier, self).__init__(config)
+        self.num_labels = num_labels
+        self.bert = BertModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
+        # 初始化参数
+        self.apply(self.init_bert_weights)
 
-#     def forward(self,
-#                 input_ids,
-#                 token_type_ids,
-#                 attention_mask,
-#                 position_ids=None,
-#                 labels=None,
-#                 embedding=False):
-#         input_ids_size = input_ids.size()
-#         # bsz x 2 x len -> bsz*2 x len
-#         input_ids = input_ids.view(input_ids_size[0] * input_ids_size[1], input_ids_size[2])
-#         attention_mask = attention_mask.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         token_type_ids = token_type_ids.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         if position_ids is not None:
-#             position_ids = position_ids.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         # bsz x 1 -> bsz
-#         if labels is not None:
-#             labels = labels.view(-1)
-#         loss_fn = torch.nn.CrossEntropyLoss()
-#         # sequence_output: bsz*14 x len x 768,  attention_mask:  bsz*14 x len
-#         sequence_output, _ = self.bert(input_ids,
-#                                        token_type_ids,
-#                                        attention_mask,
-#                                        position_ids,
-#                                        output_all_encoded_layers=False)
-#         # bsz*num_labels x 768
-#         attention_mask_expanded = attention_mask.unsqueeze(-1).expand(
-#             sequence_output.size()).float()
-#         mask_sequence_output = sequence_output * attention_mask_expanded
-#         sum_mask_sequence_output = mask_sequence_output.sum(1)
-#         sum_attention_mask_expanded = attention_mask_expanded.sum(1)
-#         sum_attention_mask_expanded = torch.clamp(sum_attention_mask_expanded, min=1e-9)
-#         # output_vectors: bsz*14 x 1 x 768
-#         output_vectors = sum_mask_sequence_output / sum_attention_mask_expanded
-#         # -> bsz x 14 x 768
-#         output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
-#         # -> 2个bsz x 7 x 768
-#         # output_vectors = self.reduce_dimension(output_vectors)
-#         # output_vectors = self.LayerNorm(output_vectors)
-#         output_vectors = self.dropout(output_vectors)
-#         if embedding:
-#             return output_vectors
-#         sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
-#         # -> 2个bsz x 768
-#         # print(f'sentence_a_vector = {sentence_a_vector.shape}')
-#         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
-#         sentence_b_vector = sentence_b_vector.mean(1).squeeze(1)
-#         # bsz*num_labels x 768  -> # bsz*num_labels x 1
-#         sentence_all_vector = torch.abs(sentence_a_vector - sentence_b_vector)
-#         # sentence_all_vector: bsz x 3*768
-#         # sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
-#         #                                 dim=1)
-
-#         # output_vectors = self.LayerNorm(output_vectors)
-#         sentence_all_vector = self.dropout(sentence_all_vector)
-#         # bsz x 2
-#         logits = self.classifier(sentence_all_vector)
-#         if labels is not None:
-#             loss = loss_fn(logits, labels)
-#             return loss, logits
-#         else:
-#             return _, torch.softmax(logits, dim=-1)
-
-
-# class TwoSentenceClassifier(BertPreTrainedModel):
-
-#     def __init__(self, config, num_labels):
-#         super(TwoSentenceClassifier, self).__init__(config)
-#         self.num_labels = num_labels
-#         self.bert = BertModel(config)
-#         self.dropout = nn.Dropout(0.2)
-#         self.classifier = nn.Linear(config.reduce_dim, num_labels)
-#         self.activation = nn.Tanh()
-#         # self.activation = nn.ReLU()  # 没有nn.Tanh()好
-#         self.reduce_dimension_0 = nn.Linear(config.hidden_size, config.reduce_dim)
-#         self.reduce_dimension_1 = nn.Linear(3 * config.reduce_dim, config.reduce_dim)
-
-#         # 初始化参数
-#         self.apply(self.init_bert_weights)
-
-#     def forward(self,
-#                 input_ids,
-#                 token_type_ids,
-#                 attention_mask,
-#                 position_ids=None,
-#                 labels=None,
-#                 embedding=False):
-#         # bsz x 14
-#         input_ids_size = input_ids.size()
-#         # bsz x 2 x len -> bsz*2 x len
-#         input_ids = input_ids.view(input_ids_size[0] * input_ids_size[1], input_ids_size[2])
-#         attention_mask = attention_mask.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         token_type_ids = token_type_ids.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         if position_ids is not None:
-#             position_ids = position_ids.view(input_ids_size[0] * input_ids_size[1],
-#                                              input_ids_size[2])
-#         # bsz x 1 -> bsz
-#         if labels is not None:
-#             labels = labels.view(-1)
-#         loss_fn = torch.nn.CrossEntropyLoss()
-#         # sequence_output: bsz*14 x len x 768,  attention_mask:  bsz*14 x len
-#         sequence_output, _ = self.bert(input_ids,
-#                                        token_type_ids,
-#                                        attention_mask,
-#                                        position_ids,
-#                                        output_all_encoded_layers=False)
-  
-#         # CLS token embeddings: bsz*14 x 1 x 768
-#         output_vectors = sequence_output[:, 0, :]
-#         output_vectors = self.reduce_dimension_0(output_vectors)
-#         # -> bsz x 14 x 768
-#         output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
-#         if embedding:
-#             return output_vectors
-#         # -> bsz x 7 x 768
-#         sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
-#         # -> 2个bsz x 768
-#         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
-#         sentence_b_vector = sentence_b_vector.mean(1).squeeze(1)
-#         # bsz*num_labels x 768  -> # bsz*num_labels x 1
-#         sentence_c_vector = torch.abs(sentence_a_vector - sentence_b_vector)
-#         # sentence_all_vector: bsz x 3*768
-#         sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
-#                                         dim=1)
-#         # sentence_all_vector = self.dropout(sentence_all_vector)
-#         sentence_all_vector = self.activation(self.reduce_dimension_1(sentence_all_vector))
-#         # output_vectors = self.LayerNorm(output_vectors)
-#         sentence_all_vector = self.dropout(sentence_all_vector)
-#         # bsz x 2
-#         logits = self.classifier(sentence_all_vector)
-#         if labels is not None:
-#             loss = loss_fn(logits, labels)
-#             return loss, logits
-#         else:
-#             return _, torch.softmax(logits, dim=-1)
+    def forward(self,
+                input_ids,
+                token_type_ids,
+                attention_mask,
+                position_ids=None,
+                labels=None,
+                embedding=False):
+        input_ids_size = input_ids.size()
+        # bsz x 2 x len -> bsz*2 x len
+        input_ids = input_ids.view(input_ids_size[0] * input_ids_size[1], input_ids_size[2])
+        attention_mask = attention_mask.view(input_ids_size[0] * input_ids_size[1],
+                                             input_ids_size[2])
+        token_type_ids = token_type_ids.view(input_ids_size[0] * input_ids_size[1],
+                                             input_ids_size[2])
+        if position_ids is not None:
+            position_ids = position_ids.view(input_ids_size[0] * input_ids_size[1],
+                                             input_ids_size[2])
+        # bsz x 1 -> bsz
+        if labels is not None:
+            labels = labels.view(-1)
+        loss_fn = torch.nn.CrossEntropyLoss()
+        # sequence_output: bsz*14 x len x 768,  attention_mask:  bsz*14 x len
+        sequence_output, _ = self.bert(input_ids,
+                                       token_type_ids,
+                                       attention_mask,
+                                       position_ids,
+                                       output_all_encoded_layers=False)
+        # bsz*num_labels x 768
+        attention_mask_expanded = attention_mask.unsqueeze(-1).expand(
+            sequence_output.size()).float()
+        mask_sequence_output = sequence_output * attention_mask_expanded
+        sum_mask_sequence_output = mask_sequence_output.sum(1)
+        sum_attention_mask_expanded = attention_mask_expanded.sum(1)
+        sum_attention_mask_expanded = torch.clamp(sum_attention_mask_expanded, min=1e-9)
+        # output_vectors: bsz*14 x 1 x 768
+        output_vectors = sum_mask_sequence_output / sum_attention_mask_expanded
+        # -> bsz x 14 x 768
+        output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
+        # -> 2个bsz x 7 x 768
+        if embedding:
+            return output_vectors
+        sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
+        # -> 2个bsz x 768
+        # print(f'sentence_a_vector = {sentence_a_vector.shape}')
+        sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
+        sentence_b_vector = sentence_b_vector.mean(1).squeeze(1)
+        # bsz*num_labels x 768  -> # bsz*num_labels x 1
+        # sentence_all_vector: bsz x 3*768
+        sentence_c_vector = torch.abs(sentence_a_vector - sentence_b_vector)
+        sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
+                                        dim=1)
+        # output_vectors = self.LayerNorm(output_vectors)
+        sentence_all_vector = self.dropout(sentence_all_vector)
+        # bsz x 2
+        logits = self.classifier(sentence_all_vector)
+        if labels is not None:
+            loss = loss_fn(logits, labels)
+            return loss, logits
+        else:
+            return _, torch.softmax(logits, dim=-1)
 
 
 # class TwoSentenceClassifier(BertPreTrainedModel):
@@ -1107,7 +1039,7 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
 #                                        attention_mask,
 #                                        position_ids,
 #                                        output_all_encoded_layers=False)
-  
+
 #         # CLS token embeddings: bsz*14 x 1 x 768
 #         output_vectors = sequence_output[:, 0, :]
 #         # -> bsz x 14 x 768
@@ -1138,19 +1070,21 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
 #             return _, torch.softmax(logits, dim=-1)
 
 
-class TwoSentenceClassifier(BertPreTrainedModel):
+class RelationClassifier(BertPreTrainedModel):
+    """
+        cls mean -> 拼接 -> 降维768 -> tanh -> dropout 0.3 -> 分类
+    """
 
     def __init__(self, config, num_labels):
-        super(TwoSentenceClassifier, self).__init__(config)
+        super(RelationClassifier, self).__init__(config)
         self.config = config
         self.num_labels = num_labels
         self.bert = BertModel(config)
-        self.dropout = nn.Dropout(0.2)
-        self.classifier = nn.Linear(3 * config.reduce_dim, num_labels)
+        self.dropout = nn.Dropout(0.3)
+        self.classifier = nn.Linear(config.reduce_dim, num_labels)
         self.activation = nn.Tanh()
-        # self.activation = nn.ReLU()  # 没有nn.Tanh()好
-        self.reduce_dimension_0 = nn.Linear(config.hidden_size, config.reduce_dim)
-        # self.reduce_dimension_1 = nn.Linear(3 * config.reduce_dim, config.reduce_dim)
+        self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
+        self.norm_layer = BertLayerNorm(config.hidden_size)
 
         # 初始化参数
         self.apply(self.init_bert_weights)
@@ -1183,12 +1117,11 @@ class TwoSentenceClassifier(BertPreTrainedModel):
                                        attention_mask,
                                        position_ids,
                                        output_all_encoded_layers=False)
-  
+
         # CLS token embeddings: bsz*14 x 1 x 768
         output_vectors = sequence_output[:, 0, :]
         # -> bsz x 14 x 768
         output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
-        output_vectors = self.activation(self.reduce_dimension_0(output_vectors))
         if embedding:
             return output_vectors
         # -> bsz x 7 x 768
@@ -1201,8 +1134,9 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         # sentence_all_vector: bsz x 3*768
         sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
                                         dim=1)
+        # sentence_all_vector = self.activation(sentence_all_vector)
         # sentence_all_vector = self.dropout(sentence_all_vector)
-        # sentence_all_vector = self.activation(self.reduce_dimension_1(sentence_all_vector))
+        sentence_all_vector = self.activation(self.reduce_dimension(sentence_all_vector))
         # output_vectors = self.LayerNorm(output_vectors)
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 2
@@ -1302,14 +1236,23 @@ class BertForSequenceClassification(BertPreTrainedModel):
         super(BertForSequenceClassification, self).__init__(config)
         self.num_labels = num_labels
         self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob + 0.2)
         self.classifier = nn.Linear(config.hidden_size, num_labels)
         # 初始化参数
         self.apply(self.init_bert_weights)
 
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None, position_ids=None):
+    def forward(self,
+                input_ids,
+                token_type_ids=None,
+                attention_mask=None,
+                labels=None,
+                position_ids=None):
         # 取得是bert解码层最后一层的第一个token的向量
-        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False, position_ids=position_ids)
+        _, pooled_output = self.bert(input_ids,
+                                     token_type_ids,
+                                     attention_mask,
+                                     output_all_encoded_layers=False,
+                                     position_ids=position_ids)
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
 

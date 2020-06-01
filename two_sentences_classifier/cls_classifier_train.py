@@ -19,6 +19,7 @@ from sklearn.metrics import classification_report
 from collections import defaultdict
 
 sys.path.append("../common_file")
+
 from parallel import BalancedDataParalle
 import tokenization
 from modeling import BertConfig, BertForSequenceClassification
@@ -146,8 +147,8 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
     for (ex_index, example) in enumerate(examples):
         input_ids, input_masks, segment_ids = [], [], []
 
-        sent_a_tokens = tokenizer.tokenize(example.text_a)[: 510]
-        sent_b_tokens = tokenizer.tokenize(example.text_b)[: 510]
+        sent_a_tokens = tokenizer.tokenize(example.text_a)[:510]
+        sent_b_tokens = tokenizer.tokenize(example.text_b)[:510]
 
         sents_tokens = ['[CLS]'] + sent_a_tokens + ['[SEP]'] + sent_b_tokens
 
@@ -167,7 +168,8 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
         input_ids = tokenizer.convert_tokens_to_ids(sents_tokens)
         length = len(input_ids)
         segment_ids = [0] * (len(sent_a_tokens) + 2) + [1] * (length - len(sent_a_tokens) - 2)
-        position_ids = [i for i in range(len(sent_a_tokens) + 2)] + [i for i in range(length - len(sent_a_tokens) - 2)]
+        position_ids = [i for i in range(len(sent_a_tokens) + 2)
+                       ] + [i for i in range(length - len(sent_a_tokens) - 2)]
 
         input_masks = [1] * length
 
@@ -394,10 +396,11 @@ def main():
 
         if task_name in ['train', 'eval', 'train_eval']:
             all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-            datas = TensorDataset(all_example_ids, all_input_ids, all_input_mask, all_segment_ids, all_position_ids, 
-                                  all_label_ids)
+            datas = TensorDataset(all_example_ids, all_input_ids, all_input_mask, all_segment_ids,
+                                  all_position_ids, all_label_ids)
         else:
-            datas = TensorDataset(all_example_ids, all_input_ids, all_input_mask, all_segment_ids, all_position_ids)
+            datas = TensorDataset(all_example_ids, all_input_ids, all_input_mask, all_segment_ids,
+                                  all_position_ids)
 
         if task_name == 'train':
             if args.local_rank == -1:
@@ -456,7 +459,11 @@ def main():
             if not args.do_train:
                 label_ids = None
             with torch.no_grad():
-                tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, labels=label_ids, position_ids=position_ids)
+                tmp_eval_loss, logits = model(input_ids,
+                                              segment_ids,
+                                              input_mask,
+                                              labels=label_ids,
+                                              position_ids=position_ids)
                 argmax_logits = torch.argmax(logits, dim=1)
                 first_indices = torch.arange(argmax_logits.size()[0])
                 logits_probs = logits[first_indices, argmax_logits]
@@ -558,7 +565,11 @@ def main():
             train_batch_count = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="training")):
                 _, input_ids, input_mask, segment_ids, position_ids, label_ids = batch
-                loss, _ = model(input_ids, segment_ids, input_mask, labels=label_ids, position_ids=position_ids)
+                loss, _ = model(input_ids,
+                                segment_ids,
+                                input_mask,
+                                labels=label_ids,
+                                position_ids=position_ids)
                 if n_gpu > 1:
                     loss = loss.mean()
                 if args.fp16 and args.loss_scale != 1.0:
