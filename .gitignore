@@ -111,3 +111,6 @@ venv.bak/
 #data
 #/data
 .vscode/*
+
+# XD
+models/
