@@ -66,7 +66,7 @@ class InputFeatures(object):
 
 
 class DataProcessor(object):
-    """Processor for the CoLA data set (GLUE version)."""
+    """Processor for the scene data set"""
 
     def __init__(self, num_labels):
         self.num_labels = num_labels
@@ -353,7 +353,7 @@ def main():
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
-    bert_config.reduce_dim = args.reduce_dim
+    # bert_config.reduce_dim = args.reduce_dim
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -586,8 +586,8 @@ def main():
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
         eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
         logger.info(f'初始开发集loss: {eval_loss}')
-        model.train()
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
+            model.train()
             torch.cuda.empty_cache()
             model_save_path = os.path.join(args.output_dir, f"{WEIGHTS_NAME}.{epoch}")
             tr_loss = 0
@@ -598,7 +598,6 @@ def main():
                 # input_ids = input_ids.to(device)
                 # input_mask = input_mask.to(device)
                 # segment_ids = segment_ids.to(device)
-
                 loss, _ = model(input_ids, segment_ids, input_mask, labels=label_ids)
                 if n_gpu > 1:
                     loss = loss.mean()

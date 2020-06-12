@@ -1,30 +1,29 @@
 """BERT finetuning runner."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
-import os
-import sys
-import logging
 import argparse
+import logging
+import os
 import random
+import sys
+from collections import defaultdict
 from itertools import chain
-from tqdm import tqdm, trange
+
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler
-from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import classification_report
-from collections import defaultdict
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset
+from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm, trange
 
 sys.path.append("../common_file")
 
-from parallel import BalancedDataParallel
 import tokenization
-from modeling import BertConfig, RelationClassifier
+from modeling import BertConfig, RelationClassifier, TwoSentenceClassifier
 from optimization import BertAdam
+from parallel import BalancedDataParallel
 
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -346,16 +345,6 @@ def main():
 
     args = parser.parse_args()
 
-    def get_fake_features(data_size, max_seq_length):
-        features = create_fake_data_features(data_size=data_size, max_seq_length=max_seq_length)
-        input_ids = [f.input_ids for f in features]
-        input_mask = [f.input_mask for f in features]
-        segment_ids = [f.segment_ids for f in features]
-        label_ids = [f.label_id for f in features]
-        ids = [f.example_id for f in features]
-        data = (input_ids, input_mask, segment_ids, label_ids, ids)
-        return data
-
     data_processor = DataProcessor(args.num_labels)
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -446,29 +435,6 @@ def main():
             dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
         return (dataloader, example_map_ids) if task_name != 'train' else dataloader
 
-    def prepare_fake_data(data_size, max_seq_length, task_name='train'):
-        features = create_fake_data_features(data_size=data_size, max_seq_length=max_seq_length)
-        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-        if task_name in ['train', 'eval']:
-            all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-            datas = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        else:
-            datas = TensorDataset(all_input_ids, all_input_mask, all_segment_ids)
-        if task_name == 'train':
-            if args.local_rank == -1:
-                data_sampler = RandomSampler(datas)
-            else:
-                data_sampler = DistributedSampler(datas)
-            dataloader = DataLoader(datas,
-                                    sampler=data_sampler,
-                                    batch_size=args.train_batch_size,
-                                    drop_last=True)
-        else:
-            dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
-        return dataloader
-
     def accuracy(example_ids, logits, probs=None, data_type='eval'):
         logits = logits.tolist()
         example_ids = example_ids.tolist()
@@ -547,6 +513,8 @@ def main():
             len(train_dataloader) / args.gradient_accumulation_steps * args.num_train_epochs)
 
     model = RelationClassifier(bert_config, num_labels=data_processor.num_labels)
+    # model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels)
+
     new_state_dict = model.state_dict()
     init_state_dict = torch.load(os.path.join(args.bert_model, 'pytorch_model.bin'))
     for k, v in init_state_dict.items():
@@ -609,8 +577,8 @@ def main():
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
         eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
         logger.info(f'初始开发集loss: {eval_loss}')
-        model.train()
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
+            model.train()
             torch.cuda.empty_cache()
             model_save_path = os.path.join(args.output_dir, f"{WEIGHTS_NAME}.{epoch}")
             tr_loss = 0

@@ -2,12 +2,17 @@
 
 import os
 import sys
+from itertools import chain
+import random
+
 import torch
 
 sys.path.append("../common_file")
 
-import tokenization
+print(f'{sys.path}')
+
 from modeling import TwoSentenceClassifier, BertConfig, RelationClassifier
+import tokenization
 
 
 class EmbeddingsModel(object):
@@ -32,7 +37,7 @@ class EmbeddingsModel(object):
         ])
         self.model.load_state_dict(new_state_dict)
         self.tokenizer = tokenization.FullTokenizer(vocab_file=vocab_path)
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = 'cuda:1' if torch.cuda.is_available() else 'cpu'
         self.model.to(self.device)
         self.model.eval()
         print(f'init {model}  model finished')
@@ -67,7 +72,7 @@ class EmbeddingsModel(object):
         all_input_ids, all_input_mask, all_segment_ids = self.convert_examples_to_features(
             sentences, **kwargs)
         output_vectors = []
-        print(f'all_input_ids = {len(all_input_ids)}')
+        # print(f'all_input_ids = {len(all_input_ids)}')
         with torch.no_grad():
             for i in range(0, len(all_input_ids), batch_size):
                 if i % batch_size == 0:
@@ -91,6 +96,7 @@ class RelationModelEmbeddings(EmbeddingsModel):
     """
     realtion classfier's embeddings
     """
+
     def __init__(self, model_path):
         """ to obtain sentences embeddings model
             model path: init model weight path
@@ -98,13 +104,9 @@ class RelationModelEmbeddings(EmbeddingsModel):
         self.model_path = model_path
         self.init_modle(RelationClassifier)
 
-    def convert_examples_to_features(self, sentences: list, max_seq_length=150, split='||', **kwargs):
+    def convert_examples_to_features(self, sentences: list, max_seq_length=150, split='||'):
         """convert id to features"""
         input_ids, input_masks, segment_ids = [], [], []
-        if kwargs.get('split'):
-            split = kwargs.get('split')
-        if kwargs.get('max_seq_length'):
-            max_seq_length = kwargs.get('max_seq_length')
         for (ex_index, sent) in enumerate(sentences):
             sents = sent.split(split)
             if len(sents) != 2:
@@ -133,22 +135,44 @@ class RelationModelEmbeddings(EmbeddingsModel):
             segment_ids.append(torch.tensor(sent_segment_ids).view(1, -1))
         return input_ids, input_masks, segment_ids
 
+    def classifiy(self, sentences: list, chunk_nums=7, split='||', **kwargs):
+        """
+        sentences: [[a||b, a||b, .....], [a||c, a||c, .....]] 或者 [a||b, ......, a||c]
+        sent_nums: sentence numbers
+        """
+        if isinstance(sentences[0], list):
+            sentences = chain(*sentences)
+
+        # assert len(sentences) == sent_nums, 'sentence list length must equal to sent_nums'
+        input_ids, input_mask, segment_ids = [
+            torch.cat(i).unsqueeze(0).to(self.device)
+            for i in self.convert_examples_to_features(sentences, split=split, **kwargs)
+        ]
+        print(f'in shape = {input_ids.shape}')
+        with torch.no_grad():
+            output_vectors, logits = self.model(input_ids, segment_ids, input_mask, embedding=False, chunk_nums=chunk_nums)
+            pred_label = torch.argmax(logits)
+            sentences_vector_modes = torch.sqrt((output_vectors * output_vectors).sum(-1)).squeeze()
+            return sentences_vector_modes, pred_label
+
 
 # if __name__ == "__main__":
-#     model = EmbeddingsModel(
-#         TwoSentenceClassifier,
-#         '/nas/lishengping/two_classifier_models/two_sentences_classifier_model0427')
-#     sentences = ['你要去干嘛', '你今天去公司吗', "我想去旅游", "五一都干嘛了", "明天又要上班了", "要去吃饭了", "你喜欢打篮球吗"]
+#     # 人物对话分类词向量
+#     # model = EmbeddingsModel(
+#     #     '/nas/lishengping/two_classifier_models/two_sentences_classifier_model0427')
+#     # sentences = ['你要去干嘛', '你今天去公司吗', "我想去旅游", "五一都干嘛了", "明天又要上班了", "要去吃饭了", "你喜欢打篮球吗"]
+#     # sentences = sentences * 30
+#     # sentences_mean_vector, sentences_vector_modes = model.embeddings(sentences)
 
-#     # model = RelationModelEmbeddings(
-#     #     RelationClassifier, '/nas/lishengping/relation_models/activate_cls_abs_model0531_15')
-#     # sentences = [
-#     #     '你要去干嘛||你今天去公司吗', '你今天去公司吗||你今天去公司吗', "我想去旅游||你今天去公司吗", "五一都干嘛了||你今天去公司吗",
-#     #     "明天又要上班了||你今天去公司吗", "要去吃饭了||你今天去公司吗", "你喜欢打篮球吗||你今天去公司吗"
-#     # ]
+#     # 人物关系分类词向量
+#     model = RelationModelEmbeddings(
+#         '/nas/lishengping/relation_models/activate_cls_abs_model0531_15')
+#     sentences = [
+#         '你要去干嘛||你今天去公司吗', '你今天去公司吗||你今天去公司吗', "我想去旅游||你今天去公司吗", "五一都干嘛了||你今天去公司吗",
+#         "明天又要上班了||你今天去公司吗", "要去吃饭了||你今天去公司吗", "你喜欢打篮球吗||你今天去公司吗"
+#     ]
 #     sentences = sentences
-#     # sentences_mean_vector, sentences_vector_modes = model.embeddings(sentences, split='||')
-#     sentences_mean_vector, sentences_vector_modes = model.embeddings(sentences)
+#     sentences_mean_vector, sentences_vector_modes = model.embeddings(sentences, split='||')
 
 #     print(f'sentences_mean_vector = {sentences_mean_vector}')
 #     print(f'sentences_vector_modes = {sentences_vector_modes}')

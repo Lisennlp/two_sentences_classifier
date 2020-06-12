@@ -1,31 +1,31 @@
 """BERT finetuning runner."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
-import os
-import sys
-import logging
 import argparse
+import logging
+import os
 import random
-from tqdm import tqdm, trange
+import sys
+from collections import defaultdict
+from itertools import chain
+
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler
-from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import classification_report
-from collections import defaultdict
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset
+from torch.utils.data.distributed import DistributedSampler
 from torch.optim.lr_scheduler import LambdaLR
+from tqdm import tqdm, trange
 
 sys.path.append("../common_file")
 
-from parallel import BalancedDataParallel
 import tokenization
-from modeling import BertConfig, BertForSequenceClassification
+from modeling import BertConfig, RelationClassifier, TwoSentenceClassifier
 from optimization import AdamW
-from data_untils import get_span, filter_lines, normalize, is_chapter_name
+
+from parallel import BalancedDataParallel
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -73,93 +73,127 @@ class DataProcessor(object):
         self.num_labels = num_labels
         self.map_symbols = {"’": "'", "‘": "'", "“": '"', "”": '"'}
 
-    def read_novel_examples(self, path, top_n=5, task_name='train'):
+    def read_novel_examples(self, path, top_n=7, task_name='train'):
         top_n = int(top_n)
         examples = []
         example_map_ids = {}
-        zero, one, index = 0, 0, 0
+        zero, one, index, add_one_data = 0, 0, 0, 0
+        para_nums_counter = defaultdict(int)
         with open(path, 'r', encoding='utf-8') as f:
             for _, line in enumerate(f):
                 line = line.replace('\n', '').split('\t')
-                text_a = line[0].split('||')
-                start = (len(text_a) - top_n) // 2
-                end = len(text_a) - start
-                indice = slice(start, end)
-                text_a = text_a[indice]
-                try:
-                    assert len(text_a) == top_n
-                except Exception as e:
-                    print(f'error = {e}')
-                    print(f'line = {line}')
-                    print(f'text_a = {text_a}')
+                paras = [self.clean_text(p) for p in line[:2]]
+                assert len(paras) == 2
+                text_a = paras[0].split('||')
+                text_b = paras[1].split('||')
+
+                if len(text_a) < top_n or len(text_b) < top_n:
                     continue
-                if int(line[-3]) not in [0, 1]:
-                    print(f'line[-3] = {line[-3]}')
-                    continue
-                example = InputExample(id=index, text_a=text_a, label=int(line[-3]), name=line[-2])
-                if int(line[-3]) == 1:
+                para_nums_counter[len(text_a)] += 1
+                para_nums_counter[len(text_b)] += 1
+                label = int(line[2])
+                # person_names = line[-1].split('||')
+                # if person_names[0] != person_names[1] and label:
+                #     continue
+                assert label in [0, 1]
+                if label:
                     one += 1
                 else:
                     zero += 1
+                example = InputExample(id=index,
+                                       text_a=text_a[:top_n],
+                                       text_b=text_b[:top_n],
+                                       label=label,
+                                       name=line[-2],
+                                       person=line[-1])
                 examples.append(example)
+
                 if task_name != 'train':
                     example_map_ids[index] = example
+
+                # if len(text_a) >= 2 * top_n and len(
+                #         text_b) >= 2 * top_n and task_name == 'train':
+                #     index += 1
+                #     add_one_data += 1
+                #     example = InputExample(id=index,
+                #                            text_a=text_a[top_n:2 * top_n],
+                #                            text_b=text_b[top_n:2 * top_n],
+                #                            label=label,
+                #                            name=line[-2],
+                #                            person=line[-1])
+                #     examples.append(example)
+                #     example_map_ids[index] = example
                 index += 1
+
         print(f'{os.path.split(path)[-1]} file examples {len(examples)}')
-        print(f'one = {one}, zero = {zero}')
+        print(
+            f'zero = {zero}, one = {one}  add_one_data = {add_one_data} \n para_nums_counter= {para_nums_counter}'
+        )
         return examples, example_map_ids
 
-    def read_predict_examples(self, path, top_n=5, task_name='eval'):
-        top_n = int(top_n)
-        examples = []
-        index = 0
-        with open(path, 'r') as f:
-            lines = filter_lines(f, keep_chapter_name=True)
-            for i, new_line in enumerate(lines):
-                if is_chapter_name(new_line):
-                    continue
-                speaker, speech = new_line.split('::', maxsplit=1)
-                if not speaker == '旁白':
-                    continue
-                indexs = get_span(lines, i)
-                if not indexs:
-                    continue
-                text_a = [normalize(lines[i]) for i in indexs]
-                assert len(text_a) == top_n
-                example = InputExample(id=index, text_a=text_a, label=i)
-                examples.append(example)
-                index += 1
-        print(f'examples len = {len(examples)}')
-        print(f'lines len = {len(lines)}')
+    def read_file_dir(self, dir, top_n=7):
+        all_examples = []
+        for root, path_dir, file_names in os.walk(dir):
+            for file_name in file_names:
+                # if file_name.endswith('001'):
+                file_abs_path = os.path.join(root, file_name)
+                examples, _ = self.read_novel_examples(file_abs_path, top_n=top_n)
+                all_examples.extend(examples)
+        print(f'dir all file  examples {len(all_examples)}')
+        return all_examples
 
-        return examples, lines
+    def clean_text(self, text):
+        text = [self.map_symbols.get(w) if self.map_symbols.get(w) else w for w in text]
+        return ''.join(text)
 
 
 def convert_examples_to_features(examples, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
     features = []
+    sent_length_counter = defaultdict(int)
     for (ex_index, example) in enumerate(examples):
-        sents_tokens, segment_ids = [], []
-        for i, sent in enumerate(example.text_a):
-            if i == 0:
-                sent_tokens = ['[CLS]'] + tokenizer.tokenize(sent) + ['[SEP]']
+        input_ids, input_masks, segment_ids = [], [], []
+        min_length = min(len(example.text_b), len(example.text_a))
+        text_a = example.text_a[:min_length]
+        text_b = example.text_b[:min_length]
+        for i, sent in enumerate(chain(text_a, text_b)):
+            sent_length = len(sent)
+            sents = sent.split('""')
+            if len(sents) != 2:
+                break
+            sents[0] = sents[0][:120].replace('"', '')
+            sents[1] = sents[1][:120].replace('"', '')
+            sents_token = [tokenizer.tokenize(s) for s in sents]
+            sent_segment_ids = [0] * (len(sents_token[0]) + 2) + [1] * (len(sents_token[1]) + 1)
+            sents_token = sents_token[0] + ['[SEP]'] + sents_token[1]
+            sents_token = sents_token[:max_seq_length - 2]
+            sent_segment_ids = sent_segment_ids[:max_seq_length]
+            sents_token = ['[CLS]'] + sents_token + ['[SEP]']
+            if 100 > sent_length >= 50:
+                sent_length_counter['100>50'] += 1
+            elif 50 > sent_length:
+                sent_length_counter['<50'] += 1
+            elif 180 > sent_length >= 100:
+                sent_length_counter['180>100'] += 1
             else:
-                sent_tokens = tokenizer.tokenize(sent) + ['[SEP]']
+                sent_length_counter['>180'] += 1
+            length = len(sents_token)
+            sent_input_masks = [1] * length
+            sent_input_ids = tokenizer.convert_tokens_to_ids(sents_token)
 
-            sents_tokens.extend(sent_tokens)
-            segment_ids.extend([i] * len(sent_tokens))
-        sents_tokens = sents_tokens[:-1][:max_seq_length - 1] + ['[SEP]']
-        length = len(sents_tokens)
-        input_ids = tokenizer.convert_tokens_to_ids(sents_tokens)
-        segment_ids = segment_ids[:length]
-        input_masks = [1] * length
+            while length < max_seq_length:
+                sent_input_ids.append(0)
+                sent_input_masks.append(0)
+                sent_segment_ids.append(0)
+                length += 1
 
-        assert len(input_ids) == len(input_masks) == len(segment_ids)
-        while length < max_seq_length:
-            input_ids.append(0)
-            input_masks.append(0)
-            segment_ids.append(0)
-            length += 1
+            assert len(sent_segment_ids) == len(sent_input_ids) == len(sent_input_masks)
+            input_ids.append(sent_input_ids)
+            input_masks.append(sent_input_masks)
+            segment_ids.append(sent_segment_ids)
+        if len(input_ids) != 14:
+            print(f'error len {len(input_ids)}')
+            continue
 
         features.append(
             InputFeatures(input_ids=input_ids,
@@ -167,25 +201,13 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
                           segment_ids=segment_ids,
                           label_id=example.label,
                           example_id=example.id))
-
     print(f'feature example input_ids：{features[-1].input_ids}')
     print(f'feature example input_mask：{features[-1].input_mask}')
     print(f'feature example segment_ids：{features[-1].segment_ids}')
 
     print(f'total features {len(features)}')
+    print(sent_length_counter)
     return features
-
-
-def init_model_token_type(model, type_vocab_size=7):
-    type_vocab_size = int(type_vocab_size)
-    config = model.config
-    config.type_vocab_size = type_vocab_size
-    token_type_embeddings_appended = torch.nn.Embedding(type_vocab_size, config.hidden_size)
-    token_type_embeddings_appended.weight.data.normal_(mean=0.0, std=config.initializer_range)
-    encoder_token_type_embedding = model.bert.embeddings.token_type_embeddings
-    token_type_embeddings_appended.weight.data[:
-                                               2, :] = encoder_token_type_embedding.weight.data[:, :]
-    encoder_token_type_embedding.weight = token_type_embeddings_appended.weight
 
 
 def main():
@@ -212,16 +234,20 @@ def main():
                         type=str,
                         required=False,
                         help="The predict file path")
-    parser.add_argument("--top_n",
-                        default=5,
-                        type=float,
-                        required=True,
-                        help="higher than threshold is classify 1,")
     parser.add_argument("--adam_epsilon",
                         default=1e-8,
                         type=float,
                         required=False,
                         help="adam eplisp")
+    parser.add_argument("--top_n",
+                        default=5,
+                        type=int,
+                        required=True,
+                        help="higher than threshold is classify 1,")
+    parser.add_argument("--reduce_dim",
+                        default=64,
+                        type=int,
+                        help="from hidden size to this dimensions, reduce dim")
     parser.add_argument("--bert_config_file",
                         default=None,
                         type=str,
@@ -259,7 +285,11 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=150,
+                        default=180,
+                        type=int,
+                        help="maximum total input sequence length after WordPiece tokenization.")
+    parser.add_argument("--gpu0_size",
+                        default=1,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--do_train",
@@ -271,10 +301,6 @@ def main():
                         action='store_true',
                         help="Whether to run eval on the dev set.")
     parser.add_argument("--num_labels", default=1, type=int, help="mapping classify nums")
-    parser.add_argument("--reduce_dim",
-                        default=64,
-                        type=int,
-                        help="from hidden size to this dimensions, reduce dim")
     parser.add_argument("--train_batch_size",
                         default=32,
                         type=int,
@@ -361,7 +387,7 @@ def main():
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
-    # bert_config.reduce_dim = args.reduce_dim
+    bert_config.reduce_dim = args.reduce_dim
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -385,26 +411,20 @@ def main():
             file_path = args.eval_file
         elif task_name == 'train_eval':
             file_path = args.eval_train_file
-        elif task_name == 'predict':
-            file_path = args.predict_file
 
         if os.path.isdir(file_path):
             examples = data_processor.read_file_dir(file_path, top_n=args.top_n)
         else:
-            if task_name == 'predict':
-                examples, example_map_ids = data_processor.read_predict_examples(
-                    file_path, top_n=args.top_n, task_name=task_name)
-            else:
-                examples, example_map_ids = data_processor.read_novel_examples(file_path,
-                                                                               top_n=args.top_n,
-                                                                               task_name=task_name)
+            examples, example_map_ids = data_processor.read_novel_examples(file_path,
+                                                                           top_n=args.top_n,
+                                                                           task_name=task_name)
         features = convert_examples_to_features(examples, args.max_seq_length, tokenizer)
         all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
         all_example_ids = torch.tensor([f.example_id for f in features], dtype=torch.long)
 
-        if task_name in ['train', 'eval', 'train_eval', 'predict']:
+        if task_name in ['train', 'eval', 'train_eval']:
             all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
             datas = TensorDataset(all_example_ids, all_input_ids, all_input_mask, all_segment_ids,
                                   all_label_ids)
@@ -429,19 +449,23 @@ def main():
         example_ids = example_ids.tolist()
         assert len(logits) == len(example_ids)
         classify_name = ['no_answer', 'yes_answer']
-        labels, text_a, novel_names = [], [], []
+        labels, text_a, text_b, novel_names, persons = [], [], [], [], []
         map_dicts = example_map_ids if data_type == 'eval' else train_example_map_ids
         for i in example_ids:
             example = map_dicts[i]
             labels.append(example.label)
             text_a.append("||".join(example.text_a))
+            text_b.append("||".join(example.text_b))
+            persons.append(example.person)
             novel_names.append(example.name)
 
         write_data = pd.DataFrame({
             "text_a": text_a,
+            "text_b": text_b,
             "labels": labels,
             "logits": logits,
             "novel_names": novel_names,
+            "person": persons
         })
         write_data['yes_or_no'] = write_data['labels'] == write_data['logits']
         if probs is not None:
@@ -450,76 +474,6 @@ def main():
         assert len(labels) == len(logits)
         result = classification_report(labels, logits, target_names=classify_name)
         return result
-
-    def eval_model(model, eval_dataloader, device, data_type='eval'):
-        model.eval()
-        eval_loss = 0
-        all_logits = []
-        all_example_ids = []
-        all_probs = []
-        accuracy_result = None
-        batch_count = 0
-        for step, batch in enumerate(tqdm(eval_dataloader, desc="evaluating")):
-            example_ids, input_ids, input_mask, segment_ids, label_ids = batch
-            if not args.do_train:
-                label_ids = None
-            with torch.no_grad():
-                label_ids = label_ids.to(device)
-                input_ids = input_ids.to(device)
-                input_mask = input_mask.to(device)
-                segment_ids = segment_ids.to(device)
-
-                tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, labels=label_ids)
-                argmax_logits = torch.argmax(logits, dim=1)
-                first_indices = torch.arange(argmax_logits.size()[0])
-                logits_probs = logits[first_indices, argmax_logits]
-            if args.do_train:
-                eval_loss += tmp_eval_loss.mean().item()
-                all_logits.append(argmax_logits)
-                all_example_ids.append(example_ids)
-            else:
-                all_logits.append(argmax_logits)
-                all_example_ids.append(example_ids)
-                all_probs.append(logits_probs)
-            batch_count += 1
-        if all_logits:
-            all_logits = torch.cat(all_logits, dim=0)
-            all_example_ids = torch.cat(all_example_ids, dim=0)
-            all_probs = torch.cat(all_probs, dim=0) if len(all_probs) else None
-            accuracy_result = accuracy(all_example_ids,
-                                       all_logits,
-                                       probs=all_probs,
-                                       data_type=data_type)
-        eval_loss /= batch_count
-        print(f'========= {data_type} acc ============\n')
-        print(f'{accuracy_result}')
-        return eval_loss, accuracy_result, all_logits
-
-    def predict_model(model, predict_dataloader, device):
-        model.eval()
-        all_label_ids = []
-        all_probs = []
-        scene_cut_indexs = []
-        is_cut_probs = []
-        for step, batch in enumerate(tqdm(predict_dataloader, desc="predicting")):
-            example_ids, input_ids, input_mask, segment_ids, label_ids = batch
-            with torch.no_grad():
-                _, logits = model(input_ids, segment_ids, input_mask, labels=None)
-                argmax_logits = torch.argmax(logits, dim=1)
-                first_indices = torch.arange(argmax_logits.size()[0])
-                logits_probs = logits[first_indices, argmax_logits]
-                all_label_ids.extend(label_ids.tolist())
-                all_probs.extend(logits_probs.tolist())
-                for label, prob, pred_label in zip(label_ids.tolist(), logits_probs.tolist(),
-                                                   argmax_logits.tolist()):
-                    if pred_label:
-                        scene_cut_indexs.append(label)
-                        is_cut_probs.append(prob)
-        print(f'all_example_ids = {len(all_label_ids)}')
-        print(f'all_probs = {len(all_probs)}')
-
-        assert len(all_label_ids) == len(all_probs)
-        return scene_cut_indexs, is_cut_probs
 
     def get_linear_schedule_with_warmup(optimizer,
                                         num_warmup_steps,
@@ -564,21 +518,61 @@ def main():
                                                     num_training_steps=num_training_steps)
         return optimizer, scheduler
 
+    def eval_model(model, eval_dataloader, device, data_type='eval'):
+        model.eval()
+        eval_loss = 0
+        all_logits = []
+        all_example_ids = []
+        all_probs = []
+        accuracy_result = None
+        batch_count = 0
+        for step, batch in enumerate(tqdm(eval_dataloader, desc="evaluating")):
+            example_ids, input_ids, input_mask, segment_ids, label_ids = batch
+            if not args.do_train:
+                label_ids = None
+            with torch.no_grad():
+                tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, labels=label_ids)
+                argmax_logits = torch.argmax(logits, dim=1)
+                first_indices = torch.arange(argmax_logits.size()[0])
+                logits_probs = logits[first_indices, argmax_logits]
+            if args.do_train:
+                eval_loss += tmp_eval_loss.mean().item()
+                all_logits.append(argmax_logits)
+                all_example_ids.append(example_ids)
+            else:
+                all_logits.append(argmax_logits)
+                all_example_ids.append(example_ids)
+                all_probs.append(logits_probs)
+            batch_count += 1
+        if all_logits:
+            all_logits = torch.cat(all_logits, dim=0)
+            all_example_ids = torch.cat(all_example_ids, dim=0)
+            all_probs = torch.cat(all_probs, dim=0) if len(all_probs) else None
+            accuracy_result = accuracy(all_example_ids,
+                                       all_logits,
+                                       probs=all_probs,
+                                       data_type=data_type)
+        eval_loss /= batch_count
+        print(f'========= {data_type} acc ============\n')
+        print(f'{accuracy_result}')
+        return eval_loss, accuracy_result, all_logits
+
+    train_dataloader = None
     if args.do_train:
         train_dataloader = prepare_data(args, task_name='train')
         num_train_steps = int(
             len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs)
 
-    model = BertForSequenceClassification(bert_config, num_labels=data_processor.num_labels)
+    model = RelationClassifier(bert_config, num_labels=data_processor.num_labels)
+    # model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels)
+
     new_state_dict = model.state_dict()
     init_state_dict = torch.load(os.path.join(args.bert_model, 'pytorch_model.bin'))
     for k, v in init_state_dict.items():
         if k in new_state_dict:
             print(f'k in = {k} v in shape = {v.shape}')
             new_state_dict[k] = v
-
     model.load_state_dict(new_state_dict)
-    init_model_token_type(model, type_vocab_size=args.top_n)
 
     for k, v in model.state_dict().items():
         print(f'k = {k}, v shape {v.shape}')
@@ -599,9 +593,11 @@ def main():
         model = torch.nn.parallel.DistributedDataParallel(model,
                                                           device_ids=[args.local_rank],
                                                           output_device=args.local_rank)
-    elif n_gpu > 1 and not device == 'cpu':
-        model = torch.nn.DataParallel(model)
-    #     # model = BalancedDataParallel(1, model, dim=0).to(device)
+    elif n_gpu > 1:
+        if args.gpu0_size > 0:
+            model = BalancedDataParallel(args.gpu0_size, model, dim=0).to(device)
+        else:
+            model = torch.nn.DataParallel(model)
 
     eval_dataloader, example_map_ids = prepare_data(args, task_name='eval')
     train_eval_dataloader, train_example_map_ids = prepare_data(args, task_name='train_eval')
@@ -609,20 +605,16 @@ def main():
     if args.do_train:
         optimizer, scheduler = get_optimizers(num_training_steps=num_train_steps, model=model)
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-        # eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
-        # logger.info(f'初始开发集loss: {eval_loss}')
+        eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
+        logger.info(f'初始开发集loss: {eval_loss}')
+
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
-            torch.cuda.empty_cache()
             model_save_path = os.path.join(args.output_dir, f"{WEIGHTS_NAME}.{epoch}")
             tr_loss = 0
             train_batch_count = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="training")):
                 _, input_ids, input_mask, segment_ids, label_ids = batch
-                label_ids = label_ids.to(device)
-                input_ids = input_ids.to(device)
-                input_mask = input_mask.to(device)
-                segment_ids = segment_ids.to(device)
                 loss, _ = model(input_ids, segment_ids, input_mask, labels=label_ids)
                 if n_gpu > 1:
                     loss = loss.mean()
@@ -630,6 +622,7 @@ def main():
                     loss = loss * args.loss_scale
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
+
                 loss.backward()
                 tr_loss += loss.item()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -651,24 +644,8 @@ def main():
 
     if args.do_predict:
         # eval_model(model, train_eval_dataloader, device, data_type='train_eval')
-        # for root, dir_, files in os.walk(''):
-        #     for file in files:
-        #         arg.predict_file = os.path.join(root, file)
-
-        predict_dataloader, predict_example_map_ids = prepare_data(args, task_name='predict')
-        scene_cut_indexs, is_cut_probs = predict_model(model, predict_dataloader, device)
-        assert len(scene_cut_indexs) == len(is_cut_probs)
-        predict_novel_name = os.path.join(
-            os.path.split(args.predict_file)[0], 'scene_cut_datas',
-            os.path.split(args.predict_file)[-1])
-        for i, index in enumerate(scene_cut_indexs):
-            predict_example_map_ids[
-                index] = f'######## {round(is_cut_probs[i], 3)} {predict_example_map_ids[index]}'
-        with open(predict_novel_name, 'w', encoding='utf-8') as f:
-            for i, line in enumerate(predict_example_map_ids):
-                f.write(line)
+        eval_model(model, eval_dataloader, device, data_type='eval')
 
 
 if __name__ == "__main__":
-
     main()

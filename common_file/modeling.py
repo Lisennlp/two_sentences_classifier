@@ -926,8 +926,11 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         super(TwoSentenceClassifier, self).__init__(config)
         self.num_labels = num_labels
         self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
+        # self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.dropout = nn.Dropout(0.2)
+        self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
+        self.activate = nn.Tanh()
+        self.classifier = nn.Linear(config.hidden_size, num_labels)
         # 初始化参数
         self.apply(self.init_bert_weights)
 
@@ -982,7 +985,7 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         sentence_c_vector = torch.abs(sentence_a_vector - sentence_b_vector)
         sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
                                         dim=1)
-        # output_vectors = self.LayerNorm(output_vectors)
+        sentence_all_vector = self.activate(self.reduce_dimension(sentence_all_vector))
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 2
         logits = self.classifier(sentence_all_vector)
@@ -1080,11 +1083,11 @@ class RelationClassifier(BertPreTrainedModel):
         self.config = config
         self.num_labels = num_labels
         self.bert = BertModel(config)
-        self.dropout = nn.Dropout(0.3)
+        self.dropout = nn.Dropout(0.2)
         self.classifier = nn.Linear(config.reduce_dim, num_labels)
         self.activation = nn.Tanh()
         self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
-        self.norm_layer = BertLayerNorm(config.hidden_size)
+        # self.norm_layer = BertLayerNorm(config.hidden_size)
 
         # 初始化参数
         self.apply(self.init_bert_weights)
@@ -1095,7 +1098,8 @@ class RelationClassifier(BertPreTrainedModel):
                 attention_mask,
                 position_ids=None,
                 labels=None,
-                embedding=False):
+                embedding=False,
+                chunk_nums=7):
         # bsz x 14
         input_ids_size = input_ids.size()
         # bsz x 2 x len -> bsz*2 x len
@@ -1125,7 +1129,12 @@ class RelationClassifier(BertPreTrainedModel):
         if embedding:
             return output_vectors
         # -> bsz x 7 x 768
-        sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
+        # sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
+        sentence_a_vector = output_vectors[:, :chunk_nums, :]
+        sentence_b_vector = output_vectors[:, chunk_nums:, :]
+        # print(f'sentence_a_vector {sentence_a_vector.shape}')
+        # print(f'sentence_b_vector {sentence_b_vector.shape}')
+
         # -> 2个bsz x 768
         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
         sentence_b_vector = sentence_b_vector.mean(1).squeeze(1)
@@ -1145,7 +1154,7 @@ class RelationClassifier(BertPreTrainedModel):
             loss = loss_fn(logits, labels)
             return loss, logits
         else:
-            return _, torch.softmax(logits, dim=-1)
+            return output_vectors, torch.softmax(logits, dim=-1)
 
 
 class ThreeCategoriesClassifier(BertPreTrainedModel):
@@ -1211,6 +1220,8 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
             return output_vectors
 
         sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
+       
+
         # -> 2个bsz x 768
         # print(f'sentence_a_vector = {sentence_a_vector.shape}')
         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
