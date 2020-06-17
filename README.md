@@ -81,7 +81,7 @@
 ## relation_classifier
 
 人物关系分类项目：主要针对小说中的人物**对话**内容进行分类，目的是根据两个人（A，B）**对话**内容判断两段话是不是出自相同的两个人的对话。我们将说话内容的句数设置为超参数top_n，
-比如7，10，15，20等等。而数据集中一共有对话各20**组**。具体的数据格式可参照 <font color=#00f size=7 face="黑体">../datas/relation_classifier/</font>
+比如7，10，15，20等等。而数据集中一共有对话各20**组**。具体的数据格式可参照 <font color=#00f size=7 face="楷体">../datas/relation_classifier/</font>
   
   数据样式。
 
@@ -107,15 +107,15 @@
 
 ## scene_classifier
 
-小说场景切换分类项目：主要针对小说中的**场景切换**内容进行识别，目的是根据两个人top_n句话，判断**中间**那句是否为场景切分的标识，数据中的场景切分有比如："...","学校","张山家里"等等。top_n我们尝试了3，5，7，9等等。
+小说场景切换分类项目：主要针对小说中的**场景切换**内容进行识别，目的是根据两个人top_n句话，判断**中间**那句是否为场景切分的标识，数据中的场景切分有比如："..."，"学校"，"张山家里"等等。top_n我们尝试了3，5，7，9等等。
 具体的数据格式可参照 <font color=#00f size=7 face="黑体">../datas/scene_classifier/</font>
   
   数据样式。
 
 - **基本思路：以7句为例，输入特征input_ids： batch_size x len**。
     
-    [CLS] 你今天干嘛去了？[SEP]学校里...[SEP]不打算干吗呀！[SEP]  # top_n = 3
-    [CLS] 你今天干嘛去了？不打算干吗呀！[SEP]学校里...[SEP]我想吃雪糕！雪糕对身体不好，要少吃。[SEP]  # top_n = 5
+        [CLS] 你今天干嘛去了？[SEP]学校里...[SEP]不打算干吗呀！[SEP]  # top_n = 3
+        [CLS] 你今天干嘛去了？不打算干吗呀！[SEP]学校里...[SEP]我想吃雪糕！雪糕对身体不好，要少吃。[SEP]  # top_n = 5
 
    
 采用正常的Bert句子分类。具体做法可参照<font color=#00f size=7 face="黑体">../common_file/modeling.py的类BertForSequenceClassification</font>。
