@@ -17,13 +17,15 @@ from torch.utils.data import TensorDataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from sklearn.metrics import classification_report
 from collections import defaultdict
+from torch.optim.lr_scheduler import LambdaLR
+
 
 sys.path.append("../common_file")
 
 from parallel import BalancedDataParallel
 import tokenization
 from modeling import BertConfig, BertForSequenceClassification
-from optimization import BertAdam
+from optimization import AdamW
 from data_untils import get_span, filter_lines, normalize, is_chapter_name
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -76,15 +78,20 @@ class DataProcessor(object):
         top_n = int(top_n)
         examples = []
         example_map_ids = {}
-        zero, one, index = 0, 0, 0
+        zero, one, index, count = 0, 0, 0, 0
         with open(path, 'r', encoding='utf-8') as f:
             for _, line in enumerate(f):
                 line = line.replace('\n', '').split('\t')
                 text_a = line[0].split('||')
+                if len(text_a) != 11:
+                    count += 1
+                    print(f'========= {len(text_a)} $$$ {count}=========')
+                    continue
                 start = (len(text_a) - top_n) // 2
                 end = len(text_a) - start
                 indice = slice(start, end)
                 text_a = text_a[indice]
+                assert len(text_a) == top_n, len(text_a)
                 try:
                     assert len(text_a) == top_n
                 except Exception as e:
@@ -218,6 +225,11 @@ def main():
                         type=float,
                         required=True,
                         help="higher than threshold is classify 1,")
+    parser.add_argument("--adam_epsilon",
+                        default=1e-8,
+                        type=float,
+                        required=False,
+                        help="adam eplisp")
     parser.add_argument("--bert_config_file",
                         default=None,
                         type=str,
@@ -255,7 +267,7 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=150,
+                        default=280,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--do_train",
@@ -289,6 +301,10 @@ def main():
                         type=float,
                         help="Proportion of training to perform linear learning rate warmup for. "
                         "E.g., 0.1 = 10%% of training.")
+    parser.add_argument("--weight_decay",
+                        default=0.01,
+                        type=float,
+                        help="Weight decay if we apply some.")
     parser.add_argument("--save_checkpoints_steps",
                         default=1000,
                         type=int,
@@ -453,6 +469,10 @@ def main():
         batch_count = 0
         for step, batch in enumerate(tqdm(eval_dataloader, desc="evaluating")):
             example_ids, input_ids, input_mask, segment_ids, label_ids = batch
+            label_ids = label_ids.to(device)
+            input_ids = input_ids.to(device)
+            input_mask = input_mask.to(device)
+            segment_ids = segment_ids.to(device)
             if not args.do_train:
                 label_ids = None
             with torch.no_grad():
@@ -557,35 +577,57 @@ def main():
         model = torch.nn.DataParallel(model)
     #     # model = BalancedDataParallel(1, model, dim=0).to(device)
 
-    if args.fp16:
-        param_optimizer = [(n, param.clone().detach().to('cpu').float().requires_grad_())
-                           for n, param in model.named_parameters()]
-    elif args.optimize_on_cpu:
-        param_optimizer = [(n, param.clone().detach().to('cpu').requires_grad_())
-                           for n, param in model.named_parameters()]
-    else:
-        param_optimizer = list(model.named_parameters())
-    no_decay = ['bias', 'gamma', 'beta']
-    optimizer_grouped_parameters = [{
-        'params': [p for n, p in param_optimizer if n not in no_decay],
-        'weight_decay_rate': 0.01
-    }, {
-        'params': [p for n, p in param_optimizer if n in no_decay],
-        'weight_decay_rate': 0.0
-    }]
-
     eval_dataloader, example_map_ids = prepare_data(args, task_name='eval')
     train_eval_dataloader, train_example_map_ids = prepare_data(args, task_name='train_eval')
 
+    def get_linear_schedule_with_warmup(optimizer,
+                                        num_warmup_steps,
+                                        num_training_steps,
+                                        last_epoch=-1):
+        """ Create a schedule with a learning rate that decreases linearly after
+        linearly increasing during a warmup period.
+        """
+        def lr_lambda(current_step):
+            if current_step < num_warmup_steps:
+                return float(current_step) / float(max(1, num_warmup_steps))
+            return max(
+                0.0,
+                float(num_training_steps - current_step) /
+                float(max(1, num_training_steps - num_warmup_steps)))
+
+        return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+    def get_optimizers(num_training_steps: int, model):
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": args.weight_decay,
+            },
+            {
+                "params": [
+                    p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer = AdamW(optimizer_grouped_parameters,
+                          lr=args.learning_rate,
+                          eps=args.adam_epsilon)
+        warmup_steps = args.warmup_proportion * num_training_steps
+        scheduler = get_linear_schedule_with_warmup(optimizer,
+                                                    num_warmup_steps=warmup_steps,
+                                                    num_training_steps=num_training_steps)
+        return optimizer, scheduler
+
     if args.do_train:
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=num_train_steps)
+        optimizer, scheduler = get_optimizers(num_training_steps=num_train_steps, model=model)
 
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-        eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
-        logger.info(f'初始开发集loss: {eval_loss}')
+        # eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
+        # logger.info(f'初始开发集loss: {eval_loss}')
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
             torch.cuda.empty_cache()
@@ -594,10 +636,10 @@ def main():
             train_batch_count = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="training")):
                 _, input_ids, input_mask, segment_ids, label_ids = batch
-                # label_ids = label_ids.to(device)
-                # input_ids = input_ids.to(device)
-                # input_mask = input_mask.to(device)
-                # segment_ids = segment_ids.to(device)
+                label_ids = label_ids.to(device)
+                input_ids = input_ids.to(device)
+                input_mask = input_mask.to(device)
+                segment_ids = segment_ids.to(device)
                 loss, _ = model(input_ids, segment_ids, input_mask, labels=label_ids)
                 if n_gpu > 1:
                     loss = loss.mean()
@@ -610,6 +652,7 @@ def main():
                 tr_loss += loss.item()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()
+                    scheduler.step()
                     model.zero_grad()
                 train_batch_count += 1
             tr_loss /= train_batch_count

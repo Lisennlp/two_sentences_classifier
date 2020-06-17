@@ -80,7 +80,7 @@ class DataProcessor(object):
         zero, one, index, add_one_data = 0, 0, 0, 0
         para_nums_counter = defaultdict(int)
         with open(path, 'r', encoding='utf-8') as f:
-            for _, line in enumerate(f):
+            for _, line in enumerate(f):    
                 line = line.replace('\n', '').split('\t')
                 paras = [self.clean_text(p) for p in line[:2]]
                 assert len(paras) == 2
@@ -92,14 +92,13 @@ class DataProcessor(object):
                 para_nums_counter[len(text_a)] += 1
                 para_nums_counter[len(text_b)] += 1
                 label = int(line[2])
-                # person_names = line[-1].split('||')
-                # if person_names[0] != person_names[1] and label:
-                #     continue
                 assert label in [0, 1]
                 if label:
                     one += 1
                 else:
                     zero += 1
+                if zero > 5600:
+                    continue
                 example = InputExample(id=index,
                                        text_a=text_a[:top_n],
                                        text_b=text_b[:top_n],
@@ -285,7 +284,7 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=180,
+                        default=190,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--gpu0_size",
@@ -320,7 +319,7 @@ def main():
                         help="Proportion of training to perform linear learning rate warmup for. "
                         "E.g., 0.1 = 10%% of training.")
     parser.add_argument("--weight_decay",
-                        default=0.0,
+                        default=0.01,
                         type=float,
                         help="Weight decay if we apply some.")
     parser.add_argument("--save_checkpoints_steps",
@@ -494,6 +493,7 @@ def main():
         return LambdaLR(optimizer, lr_lambda, last_epoch)
 
     def get_optimizers(num_training_steps: int, model):
+        # no_decay = ['bias', 'gamma', 'beta']
         no_decay = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
             {
@@ -553,7 +553,7 @@ def main():
                                        probs=all_probs,
                                        data_type=data_type)
         eval_loss /= batch_count
-        print(f'========= {data_type} acc ============\n')
+        print(f'\n========= {data_type} acc ============\n')
         print(f'{accuracy_result}')
         return eval_loss, accuracy_result, all_logits
 
@@ -563,8 +563,8 @@ def main():
         num_train_steps = int(
             len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs)
 
-    model = RelationClassifier(bert_config, num_labels=data_processor.num_labels)
-    # model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels)
+    # model = RelationClassifier(bert_config, num_labels=data_processor.num_labels)
+    model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels)
 
     new_state_dict = model.state_dict()
     init_state_dict = torch.load(os.path.join(args.bert_model, 'pytorch_model.bin'))
@@ -642,10 +642,11 @@ def main():
                 model_to_save.config.to_json_file(output_config_file)
                 tokenizer.save_vocabulary(args.output_dir)
 
-    if args.do_predict:
+    elif args.do_predict:
         # eval_model(model, train_eval_dataloader, device, data_type='train_eval')
         eval_model(model, eval_dataloader, device, data_type='eval')
 
 
 if __name__ == "__main__":
     main()
+    np.vstack

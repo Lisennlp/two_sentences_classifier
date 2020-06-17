@@ -927,10 +927,10 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         self.num_labels = num_labels
         self.bert = BertModel(config)
         # self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.dropout = nn.Dropout(0.2)
-        self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
+        self.dropout = nn.Dropout(0.1)
+        # self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
         self.activate = nn.Tanh()
-        self.classifier = nn.Linear(config.hidden_size, num_labels)
+        self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
         # 初始化参数
         self.apply(self.init_bert_weights)
 
@@ -985,7 +985,7 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         sentence_c_vector = torch.abs(sentence_a_vector - sentence_b_vector)
         sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
                                         dim=1)
-        sentence_all_vector = self.activate(self.reduce_dimension(sentence_all_vector))
+        sentence_all_vector = self.activate(sentence_all_vector)
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 2
         logits = self.classifier(sentence_all_vector)
@@ -1143,10 +1143,7 @@ class RelationClassifier(BertPreTrainedModel):
         # sentence_all_vector: bsz x 3*768
         sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
                                         dim=1)
-        # sentence_all_vector = self.activation(sentence_all_vector)
-        # sentence_all_vector = self.dropout(sentence_all_vector)
         sentence_all_vector = self.activation(self.reduce_dimension(sentence_all_vector))
-        # output_vectors = self.LayerNorm(output_vectors)
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 2
         logits = self.classifier(sentence_all_vector)
@@ -1170,7 +1167,6 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
         self.num_labels = num_labels
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.reduce_dimension = nn.Linear(config.hidden_size, config.reduce_dim)
         self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
 
         # 初始化参数
@@ -1198,7 +1194,7 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
             labels = labels.view(-1)
         loss_fn = torch.nn.CrossEntropyLoss()
         # sequence_output: bsz*14 x len x 768,  attention_mask:  bsz*14 x len
-        sequence_output, _ = self.bert(input_ids,
+        _, sequence_output = self.bert(input_ids,
                                        token_type_ids,
                                        attention_mask,
                                        position_ids,
@@ -1214,14 +1210,11 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
         output_vectors = sum_mask_sequence_output / sum_attention_mask_expanded
         # -> bsz x 14 x 768
         output_vectors = output_vectors.view(input_ids_size[0], -1, output_vectors.size()[-1])
-
         # -> 2个bsz x 7 x 768
         if embedding:
             return output_vectors
 
         sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
-       
-
         # -> 2个bsz x 768
         # print(f'sentence_a_vector = {sentence_a_vector.shape}')
         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
@@ -1234,9 +1227,18 @@ class ThreeCategoriesClassifier(BertPreTrainedModel):
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 4
         logits = self.classifier(sentence_all_vector)
+        first_logits, sencond_logits = torch.chunk(logits, 2, dim=-1)
+
+        first_labels = torch.clamp(labels, max=1)
+        second_labels = labels[first_labels == 1]
+        sencond_logits_label = sencond_logits[first_labels == 1]
         if labels is not None:
-            loss = loss_fn(logits, labels)
-            return loss, logits
+            if second_labels.sum():
+                second_labels -= 1
+                loss = loss_fn(first_logits, first_labels) + 0.3 * loss_fn(sencond_logits_label, second_labels)
+            else:
+                loss = loss_fn(first_logits, first_labels)
+            return loss, (first_logits.softmax(-1), sencond_logits.softmax(-1))
         else:
             return _, torch.softmax(logits, dim=-1)
 

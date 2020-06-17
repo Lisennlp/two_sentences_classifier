@@ -83,15 +83,20 @@ class DataProcessor(object):
                 line = line.replace('\n', '').split('\t')
                 text_a = line[0].split('||')
                 start = (len(text_a) - top_n) // 2
-                end = len(text_a) - start
+                end = start + top_n
                 indice = slice(start, end)
                 text_a = text_a[indice]
                 try:
                     assert len(text_a) == top_n
                 except Exception as e:
-                    print(f'error = {e}')
-                    print(f'line = {line}')
-                    print(f'text_a = {text_a}')
+                    print(f'start = {start}')
+                    print(f'end = {end}')
+                    print(f'text len = {len(text_a)}')
+
+
+                    # print(f'error = {e}')
+                    # print(f'line = {line}')
+                    # print(f'text_a = {text_a}')
                     continue
                 if int(line[-3]) not in [0, 1]:
                     print(f'line[-3] = {line[-3]}')
@@ -259,7 +264,7 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=150,
+                        default=210,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--do_train",

@@ -25,6 +25,8 @@ sys.path.append("../common_file")
 import tokenization
 from modeling import BertConfig, ThreeCategoriesClassifier
 from optimization import BertAdam
+from parallel import BalancedDataParallel
+
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -556,7 +558,11 @@ def main():
                                                           device_ids=[args.local_rank],
                                                           output_device=args.local_rank)
     elif n_gpu > 1:
-        model = torch.nn.DataParallel(model)
+        if args.gpu0_size > 0:
+            model = BalancedDataParallel(args.gpu0_size, model, dim=0).to(device)
+        else:
+            model = torch.nn.DataParallel(model)
+
     if args.fp16:
         param_optimizer = [(n, param.clone().detach().to('cpu').float().requires_grad_())
                            for n, param in model.named_parameters()]
@@ -568,10 +574,10 @@ def main():
     no_decay = ['bias', 'gamma', 'beta']
     optimizer_grouped_parameters = [{
         'params': [p for n, p in param_optimizer if n not in no_decay],
-        'weight_decay_rate': 0.01
+        'weight_decay': 0.01
     }, {
         'params': [p for n, p in param_optimizer if n in no_decay],
-        'weight_decay_rate': 0.0
+        'weight_decay': 0.0
     }]
     eval_dataloader, example_map_ids = prepare_data(args, task_name='eval')
     if args.do_train:
