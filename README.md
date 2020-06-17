@@ -44,8 +44,10 @@
         
 - **训练**
 
-    cd script
-    sh two_sentences_classifier.sh
+        cd script
+
+        sh two_sentences_classifier.sh
+
 
     **参数讲解**
     
@@ -70,7 +72,7 @@
 
 
 
-- 结果：
+- **结果：**
 
     |  top_n模型   | f1  | 输入20句预测 |
     |  ----  | ----  | ----  |
@@ -96,13 +98,20 @@
 
 相比TwoSentencesClassifier，在取绝对值cat，之后接了一个线性层进行降维。具体做法可参照<font color=#00f size=7 face="黑体">../common_file/modeling.py的类RelationClassifier</font>。
 
-- 结果：
+- **训练**
+
+        cd script
+
+        sh relation_classifier.sh
+        
+- **结果：**
 
     |  top_n模型   | f1  | 输入20句预测 |
     |  ----  | ----  | ----  |
     | 7  | 85% |  - |
     | 10  | - | - |
     | 15  | - | - |
+
 
 
 ## scene_classifier
@@ -120,7 +129,13 @@
    
 采用正常的Bert句子分类。具体做法可参照<font color=#00f size=7 face="黑体">../common_file/modeling.py的类BertForSequenceClassification</font>。
 
-- 结果：
+- **训练**
+
+        cd script
+
+        sh scene_classifier.sh
+
+- **结果：**
 
     |  top_n模型   | f1  |
     |  ----  | ----  |
