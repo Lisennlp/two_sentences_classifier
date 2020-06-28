@@ -1,31 +1,30 @@
 """BERT finetuning runner."""
 
-from __future__ import absolute_import, division, print_function
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 
-import argparse
-import logging
 import os
-import random
 import sys
-import re
-from collections import defaultdict
+import logging
+import argparse
+import random
 from itertools import chain
+from tqdm import tqdm, trange
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import classification_report
-from torch.utils.data import DataLoader, RandomSampler, TensorDataset
+from torch.utils.data import TensorDataset, DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
-from torch.optim.lr_scheduler import LambdaLR
-from tqdm import tqdm, trange
+from sklearn.metrics import classification_report
 
 sys.path.append("../common_file")
 
 import tokenization
-from modeling import BertConfig, RelationClassifier, TwoSentenceClassifier
-from optimization import AdamW
-
+from modeling import BertConfig, ThreeCategoriesClassifier
+from optimization import BertAdam
 from parallel import BalancedDataParallel
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -72,7 +71,7 @@ class DataProcessor(object):
 
     def __init__(self, num_labels):
         self.num_labels = num_labels
-        self.key_word = {"…": "...", "—": "-", "“": "\"", "”": "\"", "‘": "'", "’": "'"}
+        self.map_symbols = {"’": "'", "‘": "'", "“": '"', "”": '"'}
 
     def read_novel_examples(self, path, top_n=7, task_name='train'):
         top_n = int(top_n)
@@ -83,7 +82,7 @@ class DataProcessor(object):
         with open(path, 'r', encoding='utf-8') as f:
             for _, line in enumerate(f):
                 line = line.replace('\n', '').split('\t')
-                paras = [self.replace_text(p) for p in line[:2]]
+                paras = [self.clean_text(p) for p in line[:2]]
                 assert len(paras) == 2
                 text_a = paras[0].split('||')
                 text_b = paras[1].split('||')
@@ -94,6 +93,10 @@ class DataProcessor(object):
                 para_nums_counter[len(text_b)] += 1
                 label = int(line[2])
                 assert label in [0, 1]
+                if label:
+                    person_names = line[-1].split('||')
+                    if person_names[0] == person_names[1]:
+                        label = 2
                 if label:
                     one += 1
                 else:
@@ -142,10 +145,9 @@ class DataProcessor(object):
         print(f'dir all file  examples {len(all_examples)}')
         return all_examples
 
-    def replace_text(self, text):
-        for key, value in self.key_word.items():
-            text = re.sub(key, value, text)
-        return text
+    def clean_text(self, text):
+        text = [self.map_symbols.get(w) if self.map_symbols.get(w) else w for w in text]
+        return ''.join(text)
 
 
 def convert_examples_to_features(examples, max_seq_length, tokenizer):
@@ -159,28 +161,20 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
         text_b = example.text_b[:min_length]
         for i, sent in enumerate(chain(text_a, text_b)):
             sent_length = len(sent)
-            sents = sent.split('""')
-            if len(sents) != 2:
-                break
-            sents[0] = sents[0][:120].replace('"', '')
-            sents[1] = sents[1][:120].replace('"', '')
-            sents_token = [tokenizer.tokenize(s) for s in sents]
-            sent_segment_ids = [0] * (len(sents_token[0]) + 2) + [1] * (len(sents_token[1]) + 1)
-            sents_token = sents_token[0] + ['[SEP]'] + sents_token[1]
-            sents_token = sents_token[:max_seq_length - 2]
-            sent_segment_ids = sent_segment_ids[:max_seq_length]
-            sents_token = ['[CLS]'] + sents_token + ['[SEP]']
             if 100 > sent_length >= 50:
                 sent_length_counter['100>50'] += 1
             elif 50 > sent_length:
                 sent_length_counter['<50'] += 1
-            elif 180 > sent_length >= 100:
-                sent_length_counter['180>100'] += 1
+            elif 150 > sent_length >= 100:
+                sent_length_counter['150>100'] += 1
             else:
-                sent_length_counter['>180'] += 1
-            length = len(sents_token)
+                sent_length_counter['>150'] += 1
+
+            sent_tokens = ['[CLS]'] + tokenizer.tokenize(sent)[:max_seq_length - 2] + ['[SEP]']
+            length = len(sent_tokens)
+            sent_segment_ids = [0] * length
             sent_input_masks = [1] * length
-            sent_input_ids = tokenizer.convert_tokens_to_ids(sents_token)
+            sent_input_ids = tokenizer.convert_tokens_to_ids(sent_tokens)
 
             while length < max_seq_length:
                 sent_input_ids.append(0)
@@ -192,9 +186,6 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
             input_ids.append(sent_input_ids)
             input_masks.append(sent_input_masks)
             segment_ids.append(sent_segment_ids)
-        if len(input_ids) != 20:
-            print(f'error len {len(input_ids)}')
-            continue
 
         features.append(
             InputFeatures(input_ids=input_ids,
@@ -235,20 +226,11 @@ def main():
                         type=str,
                         required=False,
                         help="The predict file path")
-    parser.add_argument("--adam_epsilon",
-                        default=1e-8,
-                        type=float,
-                        required=False,
-                        help="adam eplisp")
     parser.add_argument("--top_n",
                         default=5,
-                        type=int,
+                        type=float,
                         required=True,
                         help="higher than threshold is classify 1,")
-    parser.add_argument("--reduce_dim",
-                        default=64,
-                        type=int,
-                        help="from hidden size to this dimensions, reduce dim")
     parser.add_argument("--bert_config_file",
                         default=None,
                         type=str,
@@ -286,11 +268,7 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=190,
-                        type=int,
-                        help="maximum total input sequence length after WordPiece tokenization.")
-    parser.add_argument("--gpu0_size",
-                        default=1,
+                        default=180,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--do_train",
@@ -298,6 +276,10 @@ def main():
                         action='store_true',
                         help="Whether to run training.")
     parser.add_argument("--do_predict",
+                        default=False,
+                        action='store_true',
+                        help="Whether to run eval on the dev set.")
+    parser.add_argument("--do_eval",
                         default=False,
                         action='store_true',
                         help="Whether to run eval on the dev set.")
@@ -315,15 +297,20 @@ def main():
                         default=6.0,
                         type=float,
                         help="Total number of training epochs to perform.")
+    parser.add_argument("--reduce_dim",
+                        default=64,
+                        type=int,
+                        required=False,
+                        help="from hidden size to this dimensions, reduce dim")
+    parser.add_argument("--gpu0_size",
+                        default=1,
+                        type=int,
+                        help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--warmup_proportion",
                         default=0.1,
                         type=float,
                         help="Proportion of training to perform linear learning rate warmup for. "
                         "E.g., 0.1 = 10%% of training.")
-    parser.add_argument("--weight_decay",
-                        default=0.01,
-                        type=float,
-                        help="Weight decay if we apply some.")
     parser.add_argument("--save_checkpoints_steps",
                         default=1000,
                         type=int,
@@ -384,11 +371,10 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-    if not args.do_train and not args.do_predict:
-        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+    if not any([args.do_train, args.do_predict, args.do_eval]):
+        raise ValueError("At least one of `do_train` or `do_eval`  or `do_predict` must be True.")
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
-    bert_config.reduce_dim = args.reduce_dim
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -445,151 +431,124 @@ def main():
             dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
         return (dataloader, example_map_ids) if task_name != 'train' else dataloader
 
-    def accuracy(example_ids, logits, probs=None, data_type='eval'):
-        logits = logits.tolist()
-        example_ids = example_ids.tolist()
-        assert len(logits) == len(example_ids)
-        classify_name = ['no_answer', 'yes_answer']
-        labels, text_a, text_b, novel_names, persons = [], [], [], [], []
-        map_dicts = example_map_ids if data_type == 'eval' else train_example_map_ids
+    def accuracy(example_ids, logits, labels, probs=None, positive=False):
+        if isinstance(logits, torch.Tensor):
+            logits = logits.tolist()
+        if isinstance(example_ids, torch.Tensor):
+            example_ids = example_ids.tolist()
+        assert len(logits) == len(example_ids) == len(labels)
+        classify_name = ['dif', 'part_same', 'full_same'] if positive else ['dif', 'same']
+        text_a, text_b, novel_names, persons = [], [], [], []
         for i in example_ids:
-            example = map_dicts[i]
-            labels.append(example.label)
+            example = example_map_ids[i]
+            # labels.append(example.label)
             text_a.append("||".join(example.text_a))
             text_b.append("||".join(example.text_b))
-            persons.append(example.person)
             novel_names.append(example.name)
-
+            persons.append(example.person)
         write_data = pd.DataFrame({
             "text_a": text_a,
             "text_b": text_b,
             "labels": labels,
             "logits": logits,
             "novel_names": novel_names,
-            "person": persons
+            "persons": persons
         })
         write_data['yes_or_no'] = write_data['labels'] == write_data['logits']
         if probs is not None:
-            write_data['logits'] = probs.tolist()
-        write_data.to_csv(args.result_file, index=False)
+            if isinstance(probs, torch.Tensor):
+                probs = probs.tolist()
+            write_data['logits'] = probs
+        # write_data.to_csv(os.path.join(args.output_dir, f'{positive}.csv'), index=False)
         assert len(labels) == len(logits)
-        result = classification_report(labels, logits, target_names=classify_name)
+        try:
+            result = classification_report(labels, logits, target_names=classify_name)
+        except Exception:
+            result = 'label is not equal to 3'
+        print(f'\n{result}')
         return result
 
-    def get_linear_schedule_with_warmup(optimizer,
-                                        num_warmup_steps,
-                                        num_training_steps,
-                                        last_epoch=-1):
-        """ Create a schedule with a learning rate that decreases linearly after
-        linearly increasing during a warmup period.
-        """
-
-        def lr_lambda(current_step):
-            if current_step < num_warmup_steps:
-                return float(current_step) / float(max(1, num_warmup_steps))
-            return max(
-                0.0,
-                float(num_training_steps - current_step) /
-                float(max(1, num_training_steps - num_warmup_steps)))
-
-        return LambdaLR(optimizer, lr_lambda, last_epoch)
-
-    def get_optimizers(num_training_steps: int, model):
-        # no_decay = ['bias', 'gamma', 'beta']
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": args.weight_decay,
-            },
-            {
-                "params": [
-                    p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-        optimizer = AdamW(optimizer_grouped_parameters,
-                          lr=args.learning_rate,
-                          eps=args.adam_epsilon)
-        warmup_steps = args.warmup_proportion * num_training_steps
-        scheduler = get_linear_schedule_with_warmup(optimizer,
-                                                    num_warmup_steps=warmup_steps,
-                                                    num_training_steps=num_training_steps)
-        return optimizer, scheduler
-
-    def eval_model(model, eval_dataloader, device, data_type='eval'):
+    def eval_model(model, eval_dataloader, device):
         model.eval()
         eval_loss = 0
+        all_first_logits, all_second_logits = [], []
+        all_first_example_ids, all_second_example_ids = [], []
+        all_first_labels, all_second_labels = [], []
         all_logits = []
-        all_example_ids = []
-        all_probs = []
-        accuracy_result = None
-        batch_count = 0
+        all_first_probs, all_sencond_probs = [], []
         for step, batch in enumerate(tqdm(eval_dataloader, desc="evaluating")):
             example_ids, input_ids, input_mask, segment_ids, label_ids = batch
-            if not args.do_train:
+            if not args.do_train and not args.do_eval:
                 label_ids = None
             with torch.no_grad():
                 tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, labels=label_ids)
-                argmax_logits = torch.argmax(logits, dim=1)
-                first_indices = torch.arange(argmax_logits.size()[0])
-                logits_probs = logits[first_indices, argmax_logits]
-            if args.do_train:
+                second_argmax_logits = None
+                first_labels = torch.clamp(label_ids, max=1)
+                first_argmax_logits = torch.argmax(logits[0], dim=1)
+                first_indices = first_argmax_logits[first_argmax_logits == 1]
+                if first_indices.sum():
+                    sencond_logits = logits[1][first_argmax_logits == 1]
+                    second_argmax_logits = torch.argmax(sencond_logits, dim=1)
+                    second_labels = label_ids[first_argmax_logits == 1]
+                    second_example_ids = example_ids[first_argmax_logits == 1]
+                    second_indices = torch.arange(second_argmax_logits.size()[0])
+                    second_logits_probs = sencond_logits[second_indices, second_argmax_logits]
+                    second_argmax_logits += 1
+                else:
+                    second_labels, second_logits_probs, second_example_ids = [
+                        torch.tensor([]) for i in range(3)
+                    ]
+
+            first_indices = torch.arange(first_argmax_logits.size()[0])
+            first_logits_probs = logits[0][first_indices, first_argmax_logits]
+            if args.do_train or args.do_eval:
                 eval_loss += tmp_eval_loss.mean().item()
-                all_logits.append(argmax_logits)
-                all_example_ids.append(example_ids)
-            else:
-                all_logits.append(argmax_logits)
-                all_example_ids.append(example_ids)
-                all_probs.append(logits_probs)
-            batch_count += 1
-        if all_logits:
+                all_first_logits.extend(first_argmax_logits.tolist())
+                all_first_labels.extend(first_labels.tolist())
+                if isinstance(second_argmax_logits, torch.Tensor):
+                    all_second_logits.extend(second_argmax_logits.tolist())
+                all_first_example_ids.append(example_ids)
+                all_second_labels.extend(second_labels.tolist())
+                all_second_example_ids.extend(second_example_ids.tolist())
+                all_logits.append(first_argmax_logits)
+                all_first_probs.append(first_logits_probs)
+                all_sencond_probs.extend(second_logits_probs.tolist())
+
+        if all_first_logits:
             all_logits = torch.cat(all_logits, dim=0)
-            all_example_ids = torch.cat(all_example_ids, dim=0)
-            all_probs = torch.cat(all_probs, dim=0) if len(all_probs) else None
-            accuracy_result = accuracy(all_example_ids,
-                                       all_logits,
-                                       probs=all_probs,
-                                       data_type=data_type)
-        eval_loss /= batch_count
-        print(f'\n========= {data_type} acc ============\n')
-        print(f'{accuracy_result}')
-        return eval_loss, accuracy_result, all_logits
+            all_example_ids = torch.cat(all_first_example_ids, dim=0)
+            all_first_probs = torch.cat(all_first_probs, dim=0) if len(all_first_probs) else None
+            accuracy(all_example_ids,
+                     all_logits,
+                     labels=all_first_labels,
+                     probs=all_first_probs,
+                     positive=False)
+        if all_second_logits:
+            accuracy(all_second_example_ids,
+                     all_second_logits,
+                     labels=all_second_labels,
+                     probs=all_sencond_probs,
+                     positive=True)
+        eval_loss /= (step + 1)
+        return eval_loss
 
     train_dataloader = None
+    num_train_steps = None
     if args.do_train:
         train_dataloader = prepare_data(args, task_name='train')
         num_train_steps = int(
-            len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs)
-
-    # model = RelationClassifier(bert_config, num_labels=data_processor.num_labels)
-    model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels)
-
-    new_state_dict = model.state_dict()
-    init_state_dict = torch.load(os.path.join(args.bert_model, 'pytorch_model.bin'))
-    for k, v in init_state_dict.items():
-        if k in new_state_dict:
-            print(f'k in = {k} v in shape = {v.shape}')
-            new_state_dict[k] = v
-    model.load_state_dict(new_state_dict)
-
-    for k, v in model.state_dict().items():
-        print(f'k = {k}, v shape {v.shape}')
-
+            len(train_dataloader) / args.gradient_accumulation_steps * args.num_train_epochs)
+    model = ThreeCategoriesClassifier.from_pretrained(args.bert_model,
+                                                      num_labels=data_processor.num_labels)
     if args.fp16:
         model.half()
-
-    if args.do_predict:
+    if args.do_predict or args.do_eval:
         model_path = os.path.join(args.output_dir, WEIGHTS_NAME)
         new_state_dict = torch.load(model_path)
         new_state_dict = dict([
             (k[7:], v) if k.startswith('module') else (k, v) for k, v in new_state_dict.items()
         ])
         model.load_state_dict(new_state_dict)
-
     model.to(device)
     if args.local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(model,
@@ -601,17 +560,36 @@ def main():
         else:
             model = torch.nn.DataParallel(model)
 
+    if args.fp16:
+        param_optimizer = [(n, param.clone().detach().to('cpu').float().requires_grad_())
+                           for n, param in model.named_parameters()]
+    elif args.optimize_on_cpu:
+        param_optimizer = [(n, param.clone().detach().to('cpu').requires_grad_())
+                           for n, param in model.named_parameters()]
+    else:
+        param_optimizer = list(model.named_parameters())
+    no_decay = ['bias', 'gamma', 'beta']
+    optimizer_grouped_parameters = [{
+        'params': [p for n, p in param_optimizer if n not in no_decay],
+        'weight_decay': 0.01
+    }, {
+        'params': [p for n, p in param_optimizer if n in no_decay],
+        'weight_decay': 0.0
+    }]
     eval_dataloader, example_map_ids = prepare_data(args, task_name='eval')
-    train_eval_dataloader, train_example_map_ids = prepare_data(args, task_name='train_eval')
-
     if args.do_train:
-        optimizer, scheduler = get_optimizers(num_training_steps=num_train_steps, model=model)
-        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-        eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
-        logger.info(f'初始开发集loss: {eval_loss}')
+        optimizer = BertAdam(optimizer_grouped_parameters,
+                             lr=args.learning_rate,
+                             warmup=args.warmup_proportion,
+                             t_total=num_train_steps)
 
+        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
+        # eval_loss = eval_model(model, eval_dataloader, device)
+        # logger.info(f'初始开发集loss: {eval_loss}')
+        
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
+            torch.cuda.empty_cache()
             model_save_path = os.path.join(args.output_dir, f"{WEIGHTS_NAME}.{epoch}")
             tr_loss = 0
             train_batch_count = 0
@@ -624,17 +602,14 @@ def main():
                     loss = loss * args.loss_scale
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
-
                 loss.backward()
                 tr_loss += loss.item()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()
-                    scheduler.step()
                     model.zero_grad()
                 train_batch_count += 1
             tr_loss /= train_batch_count
-            eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
-            eval_model(model, train_eval_dataloader, device, data_type='train_eval')
+            eval_loss = eval_model(model, eval_dataloader, device)
             logger.info(
                 f'训练loss: {tr_loss}, 开发集loss：{eval_loss} 训练轮数：{epoch + 1}/{int(args.num_train_epochs)}'
             )
@@ -643,10 +618,11 @@ def main():
             if epoch == 0:
                 model_to_save.config.to_json_file(output_config_file)
                 tokenizer.save_vocabulary(args.output_dir)
+    elif args.do_eval:
+        eval_model(model, eval_dataloader, device)
 
-    elif args.do_predict:
-        # eval_model(model, train_eval_dataloader, device, data_type='train_eval')
-        eval_model(model, eval_dataloader, device, data_type='eval')
+    if args.do_predict:
+        eval_model(model, eval_dataloader, device)
 
 
 if __name__ == "__main__":

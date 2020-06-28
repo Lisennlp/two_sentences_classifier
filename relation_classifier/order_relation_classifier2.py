@@ -23,10 +23,9 @@ from sklearn.metrics import classification_report
 sys.path.append("../common_file")
 
 import tokenization
-from modeling import BertConfig, ThreeCategoriesClassifier
+from modeling import BertConfig, ThreeCategoriesClassifier2
 from optimization import BertAdam
 from parallel import BalancedDataParallel
-
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
@@ -40,13 +39,13 @@ CONFIG_NAME = 'bert_config.json'
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
-    def __init__(self, id, text_a, text_b=None, label=None, name=None, persons=None):
+    def __init__(self, id, text_a, text_b=None, label=None, name=None, person=None):
         self.id = id
         self.text_a = text_a
         self.text_b = text_b
         self.label = label
         self.name = name
-        self.persons = persons
+        self.person = person
 
 
 class InputFeatures(object):
@@ -74,80 +73,69 @@ class DataProcessor(object):
         self.num_labels = num_labels
         self.map_symbols = {"’": "'", "‘": "'", "“": '"', "”": '"'}
 
-    def read_novel_examples(self, path, top_n=5, task_name='train'):
+    def read_novel_examples(self, path, top_n=7, task_name='train'):
+        top_n = int(top_n)
         examples = []
         example_map_ids = {}
+        zero, one, two, index = 0, 0, 0, 0
+        para_nums_counter = defaultdict(int)
         with open(path, 'r', encoding='utf-8') as f:
-            for index, line in enumerate(f):
+            for _, line in enumerate(f):
                 line = line.replace('\n', '').split('\t')
                 paras = [self.clean_text(p) for p in line[:2]]
                 assert len(paras) == 2
-                text_a = paras[0].split('||')[:int(top_n)]
-                text_b = paras[1].split('||')[:int(top_n)]
+                text_a = paras[0].split('||')
+                text_b = paras[1].split('||')
+
+                if len(text_a) < top_n or len(text_b) < top_n:
+                    continue
+                para_nums_counter[len(text_a)] += 1
+                para_nums_counter[len(text_b)] += 1
                 label = int(line[2])
                 assert label in [0, 1]
+                persons = line[-1].split('||')
                 if label:
-                    person_names = line[-1].split('||')
-                    # print(f'person_names = {person_names}')
-                    if person_names[0] == person_names[1]:
-                        label = 2
+                    if persons[0] == persons[1]:
+                        two += 1
+                        label = [label, label + 1]    # 完全相同，label = [1, 2]
+                    else:
+                        one += 1
+                        label = [label, label]    # 顺序不同，label = [1, 1]
+                else:
+                    zero += 1
+                    label = [label, label]    # label = [0, 0]
+                if zero > 5600:
+                    continue
                 example = InputExample(id=index,
-                                       text_a=text_a,
-                                       text_b=text_b,
+                                       text_a=text_a[:top_n],
+                                       text_b=text_b[:top_n],
                                        label=label,
                                        name=line[-2],
-                                       persons=line[-1])
+                                       person=line[-1])
                 examples.append(example)
+
                 if task_name != 'train':
                     example_map_ids[index] = example
+                index += 1
 
         print(f'{os.path.split(path)[-1]} file examples {len(examples)}')
+        print(f'zero = {zero}, one = {one} two = {two}')
         return examples, example_map_ids
 
     def read_file_dir(self, dir, top_n=7):
         all_examples = []
         for root, path_dir, file_names in os.walk(dir):
             for file_name in file_names:
-                if file_name.endswith('001'):
-                    file_abs_path = os.path.join(root, file_name)
-                    examples, _ = self.read_novel_examples(file_abs_path, top_n=top_n)
-                    all_examples.extend(examples)
+                # if file_name.endswith('001'):
+                file_abs_path = os.path.join(root, file_name)
+                examples, _ = self.read_novel_examples(file_abs_path, top_n=top_n)
+                all_examples.extend(examples)
         print(f'dir all file  examples {len(all_examples)}')
         return all_examples
 
     def clean_text(self, text):
         text = [self.map_symbols.get(w) if self.map_symbols.get(w) else w for w in text]
         return ''.join(text)
-
-
-def create_fake_data_features(data_size, max_seq_length):
-
-    # datas = [[[random.randint(1, 2000) for j in range(random.randint(100, max_seq_length))] for i in range(2)] for k in range(data_size)]
-    features = []
-    for i in range(data_size):
-        input_masks, segment_ids = [], []
-        sentences_ids = [[
-            random.randint(1, 2000) for j in range(random.randint(100, max_seq_length))
-        ] for i in range(2)]
-        for i, sentence_ids in enumerate(sentences_ids):
-            sentence_length = len(sentence_ids)
-            input_masks.append([1] * sentence_length)
-            segment_ids.append([0] * sentence_length)
-
-            while sentence_length < max_seq_length:
-                sentences_ids[i].append(0)
-                input_masks[i].append(0)
-                segment_ids[i].append(0)
-                sentence_length += 1
-        label_id = random.randint(0, 1)
-        features.append(
-            InputFeatures(input_ids=sentences_ids,
-                          input_mask=input_masks,
-                          segment_ids=segment_ids,
-                          label_id=label_id,
-                          example_id=i))
-    features = features[:len(features) // 3 * 3]
-    return features
 
 
 def convert_examples_to_features(examples, max_seq_length, tokenizer):
@@ -196,6 +184,7 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
     print(f'feature example input_ids：{features[-1].input_ids}')
     print(f'feature example input_mask：{features[-1].input_mask}')
     print(f'feature example segment_ids：{features[-1].segment_ids}')
+    print(f'feature example labels: {features[-1].label_id}')
 
     print(f'total features {len(features)}')
     print(sent_length_counter)
@@ -216,6 +205,11 @@ def main():
                         type=str,
                         required=True,
                         help="The dev file path")
+    parser.add_argument("--eval_train_file",
+                        default=None,
+                        type=str,
+                        required=True,
+                        help="The train  eval file path")
     parser.add_argument("--predict_file",
                         default=None,
                         type=str,
@@ -263,7 +257,7 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=145,
+                        default=180,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--do_train",
@@ -271,6 +265,10 @@ def main():
                         action='store_true',
                         help="Whether to run training.")
     parser.add_argument("--do_predict",
+                        default=False,
+                        action='store_true',
+                        help="Whether to run eval on the dev set.")
+    parser.add_argument("--do_eval",
                         default=False,
                         action='store_true',
                         help="Whether to run eval on the dev set.")
@@ -288,6 +286,15 @@ def main():
                         default=6.0,
                         type=float,
                         help="Total number of training epochs to perform.")
+    parser.add_argument("--reduce_dim",
+                        default=64,
+                        type=int,
+                        required=False,
+                        help="from hidden size to this dimensions, reduce dim")
+    parser.add_argument("--gpu0_size",
+                        default=1,
+                        type=int,
+                        help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--warmup_proportion",
                         default=0.1,
                         type=float,
@@ -325,16 +332,6 @@ def main():
 
     args = parser.parse_args()
 
-    def get_fake_features(data_size, max_seq_length):
-        features = create_fake_data_features(data_size=data_size, max_seq_length=max_seq_length)
-        input_ids = [f.input_ids for f in features]
-        input_mask = [f.input_mask for f in features]
-        segment_ids = [f.segment_ids for f in features]
-        label_ids = [f.label_id for f in features]
-        ids = [f.example_id for f in features]
-        data = (input_ids, input_mask, segment_ids, label_ids, ids)
-        return data
-
     data_processor = DataProcessor(args.num_labels)
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -363,10 +360,11 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-    if not args.do_train and not args.do_predict:
-        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+    if not any([args.do_train, args.do_predict, args.do_eval]):
+        raise ValueError("At least one of `do_train` or `do_eval`  or `do_predict` must be True.")
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
+    bert_config.reduce_dim = args.reduce_dim
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -384,7 +382,13 @@ def main():
                                            do_lower_case=args.do_lower_case)
 
     def prepare_data(args, task_name='train'):
-        file_path = args.train_file if task_name == 'train' else args.eval_file
+        if task_name == 'train':
+            file_path = args.train_file
+        elif task_name == 'eval':
+            file_path = args.eval_file
+        elif task_name == 'train_eval':
+            file_path = args.eval_train_file
+
         if os.path.isdir(file_path):
             examples = data_processor.read_file_dir(file_path, top_n=args.top_n)
         else:
@@ -397,7 +401,7 @@ def main():
         all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
         all_example_ids = torch.tensor([f.example_id for f in features], dtype=torch.long)
 
-        if task_name in ['train', 'eval']:
+        if task_name in ['train', 'eval', 'train_eval']:
             all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
             datas = TensorDataset(all_example_ids, all_input_ids, all_input_mask, all_segment_ids,
                                   all_label_ids)
@@ -417,36 +421,29 @@ def main():
             dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
         return (dataloader, example_map_ids) if task_name != 'train' else dataloader
 
-    def prepare_fake_data(data_size, max_seq_length, task_name='train'):
-        features = create_fake_data_features(data_size=data_size, max_seq_length=max_seq_length)
-        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-        if task_name in ['train', 'eval']:
-            all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-            datas = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        else:
-            datas = TensorDataset(all_input_ids, all_input_mask, all_segment_ids)
-        if task_name == 'train':
-            if args.local_rank == -1:
-                data_sampler = RandomSampler(datas)
-            else:
-                data_sampler = DistributedSampler(datas)
-            dataloader = DataLoader(datas,
-                                    sampler=data_sampler,
-                                    batch_size=args.train_batch_size,
-                                    drop_last=True)
-        else:
-            dataloader = DataLoader(datas, batch_size=args.eval_batch_size, drop_last=True)
-        return dataloader
-
     def accuracy(example_ids, logits, labels, probs=None, positive=False):
+
+        if positive:
+            # print(f'example_ids = {example_ids.shape}')
+            # print(f'logits = {logits.shape}')
+            # print(f'labels = {labels.shape}')
+            # print(f'probs = {probs.shape}')
+
+            logits = logits[labels > 0]
+            example_ids = example_ids[labels > 0]
+            probs = probs[labels > 0]
+            labels = labels[labels > 0]
+
         if isinstance(logits, torch.Tensor):
             logits = logits.tolist()
         if isinstance(example_ids, torch.Tensor):
             example_ids = example_ids.tolist()
+        if isinstance(labels, torch.Tensor):
+            labels = labels.tolist()
+
         assert len(logits) == len(example_ids) == len(labels)
-        classify_name = ['dif', 'part_same', 'full_same'] if positive else ['dif', 'same']
+
+        classify_name = ['part_same', 'full_same'] if positive else ['dif', 'same']
         text_a, text_b, novel_names, persons = [], [], [], []
         for i in example_ids:
             example = example_map_ids[i]
@@ -454,7 +451,7 @@ def main():
             text_a.append("||".join(example.text_a))
             text_b.append("||".join(example.text_b))
             novel_names.append(example.name)
-            persons.append(example.persons)
+            persons.append(example.person)
         write_data = pd.DataFrame({
             "text_a": text_a,
             "text_b": text_b,
@@ -470,7 +467,10 @@ def main():
             write_data['logits'] = probs
         # write_data.to_csv(os.path.join(args.output_dir, f'{positive}.csv'), index=False)
         assert len(labels) == len(logits)
-        result = classification_report(labels, logits, target_names=classify_name)
+        try:
+            result = classification_report(labels, logits, target_names=classify_name)
+        except Exception:
+            result = 'label is not equal to 3'
         print(f'\n{result}')
         return result
 
@@ -478,74 +478,75 @@ def main():
         model.eval()
         eval_loss = 0
         all_first_logits, all_second_logits = [], []
-        all_first_example_ids, all_second_example_ids = [], []
-        all_first_labels, all_second_labels = [], []
-        all_logits = []
+        all_example_ids = []
+        all_labels = []
         all_first_probs, all_sencond_probs = [], []
         for step, batch in enumerate(tqdm(eval_dataloader, desc="evaluating")):
             example_ids, input_ids, input_mask, segment_ids, label_ids = batch
-            if not args.do_train:
+            if not args.do_train and not args.do_eval:
                 label_ids = None
             with torch.no_grad():
                 tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, labels=label_ids)
-                second_argmax_logits = None
-                first_labels = torch.clamp(label_ids, max=1)
-                first_argmax_logits = torch.argmax(logits[0], dim=1)
-                first_indices = first_argmax_logits[first_argmax_logits == 1]
-                if first_indices.sum():
-                    sencond_logits = logits[1][first_argmax_logits == 1]
-                    second_argmax_logits = torch.argmax(sencond_logits, dim=1)
-                    second_labels = label_ids[first_argmax_logits == 1]
-                    second_example_ids = example_ids[first_argmax_logits == 1]
-                    second_indices = torch.arange(second_argmax_logits.size()[0])
-                    second_logits_probs = sencond_logits[second_indices, second_argmax_logits]
-                    second_argmax_logits += 1
-                else:
-                    second_labels, second_logits_probs, second_example_ids = [torch.tensor([]) for i in range(3)]
+                first_logits, second_logits = logits
+                first_prob, first_logits = torch.max(logits[0], dim=1)
+                second_prob, second_logits = torch.max(logits[1], dim=1)
+                all_labels.append(label_ids)
 
-            first_indices = torch.arange(first_argmax_logits.size()[0])
-            first_logits_probs = logits[0][first_indices, first_argmax_logits]
-            if args.do_train:
+                all_first_probs.append(first_prob)
+                all_sencond_probs.append(second_prob)
+
+                all_first_logits.append(first_logits)
+                all_second_logits.append(second_logits)
+
+                all_example_ids.append(example_ids)
+
                 eval_loss += tmp_eval_loss.mean().item()
-                all_first_logits.extend(first_argmax_logits.tolist())
-                all_first_labels.extend(first_labels.tolist())
-                if isinstance(second_argmax_logits, torch.Tensor):
-                    all_second_logits.extend(second_argmax_logits.tolist())
-                all_first_example_ids.append(example_ids)
-                all_second_labels.extend(second_labels.tolist())
-                all_second_example_ids.extend(second_example_ids.tolist())
-                all_logits.append(first_argmax_logits)
-                all_first_probs.append(first_logits_probs)
-                all_sencond_probs.extend(second_logits_probs.tolist())
 
-        if all_first_logits:
-            all_logits = torch.cat(all_logits, dim=0)
-            all_example_ids = torch.cat(all_first_example_ids, dim=0)
-            all_first_probs = torch.cat(all_first_probs, dim=0) if len(all_first_probs) else None
-            accuracy(all_example_ids,
-                     all_logits,
-                     labels=all_first_labels,
-                     probs=all_first_probs,
-                     positive=False)
-        if all_second_logits:
-            accuracy(all_second_example_ids,
-                     all_second_logits,
-                     labels=all_second_labels,
-                     probs=all_sencond_probs,
-                     positive=True)
+        all_first_logits = torch.cat(all_first_logits, dim=0)
+        all_second_logits = torch.cat(all_second_logits, dim=0)
+
+        all_first_probs = torch.cat(all_first_probs, dim=0)
+        all_sencond_probs = torch.cat(all_sencond_probs, dim=0)
+
+        all_labels = torch.cat(all_labels, dim=0)
+
+        all_first_labels, all_second_labels = [
+            label.view(-1) for label in torch.chunk(all_labels, dim=1, chunks=2)
+        ]
+
+        all_example_ids = torch.cat(all_example_ids, dim=0)
+
+        accuracy(all_example_ids,
+                 all_first_logits,
+                 labels=all_first_labels,
+                 probs=all_first_probs,
+                 positive=False)
+        accuracy(all_second_logits,
+                 all_second_logits,
+                 labels=all_second_labels,
+                 probs=all_sencond_probs,
+                 positive=True)
         eval_loss /= (step + 1)
         return eval_loss
+
     train_dataloader = None
     num_train_steps = None
     if args.do_train:
         train_dataloader = prepare_data(args, task_name='train')
         num_train_steps = int(
             len(train_dataloader) / args.gradient_accumulation_steps * args.num_train_epochs)
-    model = ThreeCategoriesClassifier.from_pretrained(args.bert_model,
-                                                      num_labels=data_processor.num_labels)
+    model = ThreeCategoriesClassifier2(bert_config, num_labels=data_processor.num_labels)
+    new_state_dict = model.state_dict()
+    init_state_dict = torch.load(os.path.join(args.bert_model, 'pytorch_model.bin'))
+    for k, v in init_state_dict.items():
+        if k in new_state_dict:
+            print(f'k in = {k} v in shape = {v.shape}')
+            new_state_dict[k] = v
+    model.load_state_dict(new_state_dict)
+
     if args.fp16:
         model.half()
-    if args.do_predict:
+    if args.do_predict or args.do_eval:
         model_path = os.path.join(args.output_dir, WEIGHTS_NAME)
         new_state_dict = torch.load(model_path)
         new_state_dict = dict([
@@ -589,8 +590,9 @@ def main():
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
         # eval_loss = eval_model(model, eval_dataloader, device)
         # logger.info(f'初始开发集loss: {eval_loss}')
-        model.train()
+
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
+            model.train()
             torch.cuda.empty_cache()
             model_save_path = os.path.join(args.output_dir, f"{WEIGHTS_NAME}.{epoch}")
             tr_loss = 0
@@ -620,6 +622,8 @@ def main():
             if epoch == 0:
                 model_to_save.config.to_json_file(output_config_file)
                 tokenizer.save_vocabulary(args.output_dir)
+    elif args.do_eval:
+        eval_model(model, eval_dataloader, device)
 
     if args.do_predict:
         eval_model(model, eval_dataloader, device)
