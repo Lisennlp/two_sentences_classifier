@@ -2,6 +2,7 @@
 
 import os
 import sys
+import re
 from itertools import chain
 import random
 
@@ -23,6 +24,12 @@ class EmbeddingsModel(object):
         """
         self.model_path = model_path
         self.init_modle(TwoSentenceClassifier)
+        self.key_word = {"…": "...", "—": "-", "“": "\"", "”": "\"", "‘": "'", "’": "'"}
+
+    def replace_text(self, text):
+        for key, value in self.key_word.items():
+            text = re.sub(key, value, text)
+        return text
 
     def init_modle(self, model):
         print(f'starting to init model')
@@ -32,6 +39,7 @@ class EmbeddingsModel(object):
         self.model = model(self.bert_config, 2)
         weight_path = os.path.join(self.model_path, 'pytorch_model.bin')
         new_state_dict = torch.load(weight_path)
+
         new_state_dict = dict([
             (k[7:], v) if k.startswith('module') else (k, v) for k, v in new_state_dict.items()
         ])
@@ -46,6 +54,7 @@ class EmbeddingsModel(object):
         """convert id to features"""
         all_input_ids, all_input_masks, all_segment_ids = [], [], []
         for (ex_index, sent) in enumerate(sentences):
+            sent = self.replace_text(sent)
             sent_tokens = ['[CLS]'] + self.tokenizer.tokenize(sent)[:max_seq_length - 2] + ['[SEP]']
             length = len(sent_tokens)
             sent_segment_ids = [0] * length
@@ -63,8 +72,7 @@ class EmbeddingsModel(object):
         return all_input_ids, all_input_masks, all_segment_ids
 
     def embeddings(self, sentences: list, batch_size=30, **kwargs):
-        """ 
-            **kwargs：
+        """ **kwargs：
             batch_size: one circle sentence numbers
             max_seq_length: max sentences length
             split：split symbol，if get split， to relation modeling features convert
@@ -108,6 +116,7 @@ class RelationModelEmbeddings(EmbeddingsModel):
         """convert id to features"""
         input_ids, input_masks, segment_ids = [], [], []
         for (ex_index, sent) in enumerate(sentences):
+            sent = self.replace_text(sent)
             sents = sent.split(split)
             if len(sents) != 2:
                 continue
@@ -150,7 +159,11 @@ class RelationModelEmbeddings(EmbeddingsModel):
         ]
         print(f'in shape = {input_ids.shape}')
         with torch.no_grad():
-            output_vectors, logits = self.model(input_ids, segment_ids, input_mask, embedding=False, chunk_nums=chunk_nums)
+            output_vectors, logits = self.model(input_ids,
+                                                segment_ids,
+                                                input_mask,
+                                                embedding=False,
+                                                chunk_nums=chunk_nums)
             pred_label = torch.argmax(logits)
             sentences_vector_modes = torch.sqrt((output_vectors * output_vectors).sum(-1)).squeeze()
             return sentences_vector_modes, pred_label
