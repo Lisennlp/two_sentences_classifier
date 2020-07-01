@@ -545,7 +545,7 @@ def main():
         return LambdaLR(optimizer, lr_lambda, last_epoch)
 
     def get_optimizers(num_training_steps: int, model):
-        no_decay = ["bias", "LayerNorm.weight"]
+        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
             {
                 "params": [

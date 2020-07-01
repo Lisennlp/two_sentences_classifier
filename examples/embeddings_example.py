@@ -5,11 +5,7 @@ import pandas as pd
 
 print(pd.__file__)
 
-# CUR_PATH = os.path.dirname(os.path.abspath(__file__))
 sys.path.append('../')
-
-import xxx
-
 
 from two_sentences_classifier.word_embeddings import EmbeddingsModel, RelationModelEmbeddings
 

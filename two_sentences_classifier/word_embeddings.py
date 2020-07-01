@@ -10,10 +10,11 @@ import torch
 
 sys.path.append("../common_file")
 
-print(f'{sys.path}')
-
 from modeling import TwoSentenceClassifier, BertConfig, RelationClassifier
 import tokenization
+
+
+key_word = {"…": "...", "—": "-", "“": "\"", "”": "\"", "‘": "'", "’": "'"}
 
 
 class EmbeddingsModel(object):
@@ -24,10 +25,9 @@ class EmbeddingsModel(object):
         """
         self.model_path = model_path
         self.init_modle(TwoSentenceClassifier)
-        self.key_word = {"…": "...", "—": "-", "“": "\"", "”": "\"", "‘": "'", "’": "'"}
 
     def replace_text(self, text):
-        for key, value in self.key_word.items():
+        for key, value in key_word.items():
             text = re.sub(key, value, text)
         return text
 
@@ -38,8 +38,7 @@ class EmbeddingsModel(object):
         self.bert_config = BertConfig.from_json_file(bert_config_file)
         self.model = model(self.bert_config, 2)
         weight_path = os.path.join(self.model_path, 'pytorch_model.bin')
-        new_state_dict = torch.load(weight_path)
-
+        new_state_dict = torch.load(weight_path, map_location='cuda:1')
         new_state_dict = dict([
             (k[7:], v) if k.startswith('module') else (k, v) for k, v in new_state_dict.items()
         ])
@@ -50,7 +49,7 @@ class EmbeddingsModel(object):
         self.model.eval()
         print(f'init {model}  model finished')
 
-    def convert_examples_to_features(self, sentences: list, max_seq_length=150):
+    def convert_examples_to_features(self, sentences: list, max_seq_length=150, **kwargs):
         """convert id to features"""
         all_input_ids, all_input_masks, all_segment_ids = [], [], []
         for (ex_index, sent) in enumerate(sentences):
@@ -72,7 +71,8 @@ class EmbeddingsModel(object):
         return all_input_ids, all_input_masks, all_segment_ids
 
     def embeddings(self, sentences: list, batch_size=30, **kwargs):
-        """ **kwargs：
+        """
+            **kwargs：
             batch_size: one circle sentence numbers
             max_seq_length: max sentences length
             split：split symbol，if get split， to relation modeling features convert
@@ -99,6 +99,56 @@ class EmbeddingsModel(object):
             assert len(sentences_mean_vector) == self.bert_config.hidden_size
         return sentences_mean_vector.tolist(), sentences_vector_modes.tolist()
 
+    def attention(self, sentences: list, batch_size=30, **kwargs):
+        """
+            **kwargs：
+            batch_size: one circle sentence numbers
+            max_seq_length: max sentences length
+            split：split symbol，if get split， to relation modeling features convert
+        """
+        all_input_ids, all_input_mask, all_segment_ids, tokens = self.convert_examples_to_features(
+            sentences, return_token=True, **kwargs)
+        output_token_modes, outputs_token_mean = [], []
+        with torch.no_grad():
+            for i in range(0, len(all_input_ids), batch_size):
+                if i % batch_size == 0:
+                    input_ids = torch.cat(all_input_ids[i:i + batch_size],
+                                          dim=0).to(self.device).unsqueeze(0)
+                    segment_ids = torch.cat(all_segment_ids[i:i + batch_size],
+                                            dim=0).to(self.device).unsqueeze(0)
+                    input_mask = torch.cat(all_input_mask[i:i + batch_size],
+                                           dim=0).to(self.device).unsqueeze(0)
+                    mask_sequence_output, output_vectors = self.model(
+                        input_ids,
+                        segment_ids,
+                        input_mask,
+                        attention=True,
+                        token_mean=kwargs.get('token_mean'))
+                    output_token_mode = torch.norm(mask_sequence_output, dim=-1)
+                    output_token_mean = torch.norm(output_vectors, dim=-1)
+
+                    output_token_modes.append(output_token_mode)
+                    outputs_token_mean.append(output_token_mean)
+            output_token_modes = torch.cat(output_token_modes, dim=0).squeeze()
+            outputs_token_mean = torch.cat(outputs_token_mean, dim=0).squeeze()
+
+        tokens_modes_list = []
+        output_token_modes = output_token_modes.cpu()
+        outputs_token_mean = outputs_token_mean.cpu()
+        person_pairs = kwargs.get('person_pairs')
+        for index, (mode, mean_mode) in enumerate(zip(output_token_modes, outputs_token_mean)):
+            sent_tokens = tokens[index]
+            sent_modes = mode[mode > 0].tolist()
+            assert len(sent_tokens) == len(sent_modes)
+            sent_token_modes = [(token, mode) for token, mode in zip(sent_tokens, sent_modes)]
+            sent_token_modes_dict = {}
+            if isinstance(person_pairs, list):
+                sent_token_modes_dict['persons'] = person_pairs[index]
+            sent_token_modes_dict['token_modes_mean'] = mean_mode.tolist()
+            sent_token_modes_dict['token_modes'] = sent_token_modes
+            tokens_modes_list.append(sent_token_modes_dict)
+        return tokens_modes_list
+
 
 class RelationModelEmbeddings(EmbeddingsModel):
     """
@@ -112,9 +162,14 @@ class RelationModelEmbeddings(EmbeddingsModel):
         self.model_path = model_path
         self.init_modle(RelationClassifier)
 
-    def convert_examples_to_features(self, sentences: list, max_seq_length=150, split='||'):
+    def convert_examples_to_features(self,
+                                     sentences: list,
+                                     max_seq_length=150,
+                                     split='||',
+                                     **kwargs):
         """convert id to features"""
         input_ids, input_masks, segment_ids = [], [], []
+        tokens = []
         for (ex_index, sent) in enumerate(sentences):
             sent = self.replace_text(sent)
             sents = sent.split(split)
@@ -131,17 +186,18 @@ class RelationModelEmbeddings(EmbeddingsModel):
             length = len(sents_token)
             sent_input_masks = [1] * length
             sent_input_ids = self.tokenizer.convert_tokens_to_ids(sents_token)
-
+            tokens.append(sents_token)
             while length < max_seq_length:
                 sent_input_ids.append(0)
                 sent_input_masks.append(0)
                 sent_segment_ids.append(0)
                 length += 1
-
             assert len(sent_segment_ids) == len(sent_input_ids) == len(sent_input_masks)
             input_ids.append(torch.tensor(sent_input_ids).view(1, -1))
             input_masks.append(torch.tensor(sent_input_masks).view(1, -1))
             segment_ids.append(torch.tensor(sent_segment_ids).view(1, -1))
+        if kwargs.get("return_token"):
+            return input_ids, input_masks, segment_ids, tokens
         return input_ids, input_masks, segment_ids
 
     def classifiy(self, sentences: list, chunk_nums=7, split='||', **kwargs):
@@ -157,7 +213,6 @@ class RelationModelEmbeddings(EmbeddingsModel):
             torch.cat(i).unsqueeze(0).to(self.device)
             for i in self.convert_examples_to_features(sentences, split=split, **kwargs)
         ]
-        print(f'in shape = {input_ids.shape}')
         with torch.no_grad():
             output_vectors, logits = self.model(input_ids,
                                                 segment_ids,
@@ -167,25 +222,3 @@ class RelationModelEmbeddings(EmbeddingsModel):
             pred_label = torch.argmax(logits)
             sentences_vector_modes = torch.sqrt((output_vectors * output_vectors).sum(-1)).squeeze()
             return sentences_vector_modes, pred_label
-
-
-# if __name__ == "__main__":
-#     # 人物对话分类词向量
-#     # model = EmbeddingsModel(
-#     #     '/nas/lishengping/two_classifier_models/two_sentences_classifier_model0427')
-#     # sentences = ['你要去干嘛', '你今天去公司吗', "我想去旅游", "五一都干嘛了", "明天又要上班了", "要去吃饭了", "你喜欢打篮球吗"]
-#     # sentences = sentences * 30
-#     # sentences_mean_vector, sentences_vector_modes = model.embeddings(sentences)
-
-#     # 人物关系分类词向量
-#     model = RelationModelEmbeddings(
-#         '/nas/lishengping/relation_models/activate_cls_abs_model0531_15')
-#     sentences = [
-#         '你要去干嘛||你今天去公司吗', '你今天去公司吗||你今天去公司吗', "我想去旅游||你今天去公司吗", "五一都干嘛了||你今天去公司吗",
-#         "明天又要上班了||你今天去公司吗", "要去吃饭了||你今天去公司吗", "你喜欢打篮球吗||你今天去公司吗"
-#     ]
-#     sentences = sentences
-#     sentences_mean_vector, sentences_vector_modes = model.embeddings(sentences, split='||')
-
-#     print(f'sentences_mean_vector = {sentences_mean_vector}')
-#     print(f'sentences_vector_modes = {sentences_vector_modes}')

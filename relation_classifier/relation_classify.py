@@ -98,7 +98,7 @@ class DataProcessor(object):
                     one += 1
                 else:
                     zero += 1
-                if zero > 5600:
+                if zero > 5600 and task_name == 'train':
                     continue
                 example = InputExample(id=index,
                                        text_a=text_a[:top_n],
@@ -148,7 +148,7 @@ class DataProcessor(object):
         return text
 
 
-def convert_examples_to_features(examples, max_seq_length, tokenizer):
+def convert_examples_to_features(examples, max_seq_length, tokenizer, top_n):
     """Loads a data file into a list of `InputBatch`s."""
     features = []
     sent_length_counter = defaultdict(int)
@@ -192,10 +192,9 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer):
             input_ids.append(sent_input_ids)
             input_masks.append(sent_input_masks)
             segment_ids.append(sent_segment_ids)
-        if len(input_ids) != 20:
+        if len(input_ids) != 2 * top_n:
             print(f'error len {len(input_ids)}')
             continue
-
         features.append(
             InputFeatures(input_ids=input_ids,
                           input_mask=input_masks,
@@ -286,7 +285,7 @@ def main():
                         action='store_true',
                         help="Whether to lower case the input text.")
     parser.add_argument("--max_seq_length",
-                        default=190,
+                        default=180,
                         type=int,
                         help="maximum total input sequence length after WordPiece tokenization.")
     parser.add_argument("--gpu0_size",
@@ -419,7 +418,7 @@ def main():
             examples, example_map_ids = data_processor.read_novel_examples(file_path,
                                                                            top_n=args.top_n,
                                                                            task_name=task_name)
-        features = convert_examples_to_features(examples, args.max_seq_length, tokenizer)
+        features = convert_examples_to_features(examples, args.max_seq_length, tokenizer, args.top_n)
         all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
@@ -496,7 +495,7 @@ def main():
 
     def get_optimizers(num_training_steps: int, model):
         # no_decay = ['bias', 'gamma', 'beta']
-        no_decay = ["bias", "LayerNorm.weight"]
+        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
             {
                 "params": [
