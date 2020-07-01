@@ -64,6 +64,7 @@
                                 --num_train_epochs 6   \
                                 --top_n 15   \   # 每天数据有20句，取了top_n句
                                 --num_labels 2   \  # 类别数目
+                                --reduce_dim 0   # 降维后的维度值，0表示不降维
                                 --output_dir ./two_sentences_classifier_large_model0506_15   \  # 模型保存位置
                                 --bert_model /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/   \
                                 --init_checkpoint /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/pytorch_model.bin   \
