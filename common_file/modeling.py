@@ -924,13 +924,18 @@ class TwoSentenceClassifier(BertPreTrainedModel):
 
     def __init__(self, config, num_labels):
         super(TwoSentenceClassifier, self).__init__(config)
+        self.config = config
         self.num_labels = num_labels
         self.bert = BertModel(config)
         # self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.dropout = nn.Dropout(0.3)
-        # self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
+        if self.config.reduce_dim > 0:
+            self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
+            self.classifier = nn.Linear(config.hidden_size, num_labels)
+        else:
+            self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
         self.activate = nn.Tanh()
-        self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
+        
         # 初始化参数
         self.apply(self.init_bert_weights)
 
@@ -988,7 +993,8 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         sentence_c_vector = torch.abs(sentence_a_vector - sentence_b_vector)
         sentence_all_vector = torch.cat([sentence_a_vector, sentence_b_vector, sentence_c_vector],
                                         dim=1)
-        # sentence_all_vector = self.reduce_dimension(sentence_all_vector)    # 降维
+        if self.config.reduce_dim > 0:
+            sentence_all_vector = self.reduce_dimension(sentence_all_vector)    # 降维
         sentence_all_vector = self.activate(sentence_all_vector)
         sentence_all_vector = self.dropout(sentence_all_vector)
         # bsz x 2
