@@ -132,7 +132,7 @@
   
   数据样式。
 
-- **基本思路：以7句为例，输入特征input_ids： batch_size x len**。
+- **基本思路：以3和5句为例，输入特征input_ids： batch_size x len**。
     
         [CLS] 你今天干嘛去了？[SEP]学校里...[SEP]不打算干吗呀！[SEP]  # top_n = 3
         [CLS] 你今天干嘛去了？不打算干吗呀！[SEP]学校里...[SEP]我想吃雪糕！雪糕对身体不好，要少吃。[SEP]  # top_n = 5
