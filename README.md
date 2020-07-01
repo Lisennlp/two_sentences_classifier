@@ -40,7 +40,7 @@
 
 一共14句话，但是注意，A说的7句话是出字某一本小说的随机7句，不一定是跟B说的话，AB可能出自不同小说的人物。为什么这么输入呢？是因为在后面模型前向传播的时候，我们会对这14句话
 进行chunk，拆分成两份，维度分别为 batch_size x 7 x len x 768。然后根据《Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks》方法，采用mean pooling
-策略。将维度变成batch_size x 7 x 768，然后再继续mena -> batch_size x 768。最后基于两个batch_size x 768按照框架图取绝对值，拼接操作。具体做法可参照<font color=#00f size=7 face="黑体">../common_file/modeling.py的类TwoSentenceClassifier</font>
+策略。将维度变成batch_size x 7 x 768，然后再继续mena -> batch_size x 768。最后基于两个batch_size x 768按照框架图取绝对值，拼接操作。具体做法可参照<font color=#00f size=7 face="黑体">../common_file/modeling.py的类TwoSentenceClassifier</font>。
         
 - **训练**
 
@@ -106,12 +106,22 @@
         
 - **结果：**
 
+    a) 降维768结果  
     |  top_n模型   | f1  | 输入20句预测 |
     |  ----  | ----  | ----  |
-    | 7  | 85% |  - |
-    | 10  | 90% | - |
-    | 15  | 94% | - |
+    | 7  | 85% | 74%|
+    | 10  | 90% | 85% |
+    | 15  | 94% | 93% |
 
+    b) 不降维结果  
+     |  top_n模型   | f1  | 输入20句预测 |
+    |  ----  | ----  | ----  |
+    | 7  | 81% | 82%|
+    | 10  | - | - |
+    | 15  | - | - |  
+
+分析：可以发现，在训练人物关系时，和训练任务分类有些许不同，就是加入了降维操作。从结果中看，降维是可以获得更好的分类效果的，但是当输入的句数和训练时用的句数不一致时，模型的精度会有偏差。这就是降维带来的负面效果。
+因此，如果你预测和训练的输入句数不同时，建议采用不降维方式进行训练，这样获得的模型精度更好。
 
 
 ## scene_classifier
