@@ -323,6 +323,10 @@ def main():
                         default=0.01,
                         type=float,
                         help="Weight decay if we apply some.")
+    parser.add_argument("--max_grad_norm",
+                        default=1.0,
+                        type=float,
+                        help="If the gradient exceeds this value, set it to this value")
     parser.add_argument("--save_checkpoints_steps",
                         default=1000,
                         type=int,
@@ -356,6 +360,7 @@ def main():
     args = parser.parse_args()
 
     data_processor = DataProcessor(args.num_labels)
+
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
@@ -418,7 +423,8 @@ def main():
             examples, example_map_ids = data_processor.read_novel_examples(file_path,
                                                                            top_n=args.top_n,
                                                                            task_name=task_name)
-        features = convert_examples_to_features(examples, args.max_seq_length, tokenizer, args.top_n)
+        features = convert_examples_to_features(examples, args.max_seq_length, tokenizer,
+                                                args.top_n)
         all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
@@ -608,12 +614,10 @@ def main():
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
         eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
         logger.info(f'初始开发集loss: {eval_loss}')
-
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
             model_save_path = os.path.join(args.output_dir, f"{WEIGHTS_NAME}.{epoch}")
             tr_loss = 0
-            train_batch_count = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="training")):
                 _, input_ids, input_mask, segment_ids, label_ids = batch
                 loss, _ = model(input_ids, segment_ids, input_mask, labels=label_ids)
@@ -627,12 +631,14 @@ def main():
                 loss.backward()
                 tr_loss += loss.item()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                     optimizer.step()
                     scheduler.step()
                     model.zero_grad()
-                train_batch_count += 1
-            tr_loss /= train_batch_count
+            tr_loss /= (step + 1)
+            # 开发集评测
             eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
+            # 训练集评测
             eval_model(model, train_eval_dataloader, device, data_type='train_eval')
             logger.info(
                 f'训练loss: {tr_loss}, 开发集loss：{eval_loss} 训练轮数：{epoch + 1}/{int(args.num_train_epochs)}'
