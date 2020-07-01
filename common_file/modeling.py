@@ -931,7 +931,7 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         self.dropout = nn.Dropout(0.3)
         if self.config.reduce_dim > 0:
             self.reduce_dimension = nn.Linear(3 * config.hidden_size, config.reduce_dim)
-            self.classifier = nn.Linear(config.hidden_size, num_labels)
+            self.classifier = nn.Linear(config.reduce_dim, num_labels)
         else:
             self.classifier = nn.Linear(3 * config.hidden_size, num_labels)
         self.activate = nn.Tanh()
