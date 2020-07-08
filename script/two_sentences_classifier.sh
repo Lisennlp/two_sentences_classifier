@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0,1,2 python ../two_sentences_classifier/train.py \
+CUDA_VISIBLE_DEVICES=0,1,2 python ../two_sentences_classifier/add_type_train.py \
                                   --vocab_file /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/vocab.txt    \
                                   --bert_config_file /nas/pretrain-bert/pretrain-pytorch/chinese_wwm_ext_pytorch/bert_config.json   \
                                   --do_lower_case    \
