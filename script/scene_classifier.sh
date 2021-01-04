@@ -3,7 +3,7 @@
 if [ "$1" = "train" ]; then
         echo "start to train......"
 
-        CUDA_VISIBLE_DEVICES=0,2 python ../scene_classifier/scene_classifier_train.py \
+        CUDA_VISIBLE_DEVICES=4,5,6,7 python ../scene_classifier/scene_classifier_train.py \
                                     --vocab_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/vocab.txt    \
                                     --bert_config_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/bert_config.json   \
                                     --do_lower_case    \
@@ -13,14 +13,14 @@ if [ "$1" = "train" ]; then
                                     --train_batch_size 40   \
                                     --eval_batch_size 40 \
                                     --learning_rate 3e-5   \
-                                    --num_train_epochs 4   \
-                                    --top_n 5   \
+                                    --num_train_epochs  6  \
+                                    --top_n 7   \
                                     --num_labels 2   \
-                                    --output_dir ./5_scene_model0527_bert_3 \
+                                    --output_dir ./7_scene_model_b40_l3_5_eps6 \
                                     --bert_model /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese   \
                                     --init_checkpoint /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/pytorch_model.bin   \
                                     --do_train   \
-                                    --gradient_accumulation_steps 2 3>&2 2>&1 1>&3 | tee logs/5_scene_model0527_bert_3.log
+                                    --gradient_accumulation_steps 2 3>&2 2>&1 1>&3 | tee logs/7_scene_model_b40_l3_5_eps6.log
 
 
 elif [ "$1" = "eval" ];then

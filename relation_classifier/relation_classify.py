@@ -157,6 +157,8 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer, top_n):
         min_length = min(len(example.text_b), len(example.text_a))
         text_a = example.text_a[:min_length]
         text_b = example.text_b[:min_length]
+        if len(text_a) != len(text_b):
+            continue
         for i, sent in enumerate(chain(text_a, text_b)):
             sent_length = len(sent)
             sents = sent.split('""')
@@ -192,9 +194,9 @@ def convert_examples_to_features(examples, max_seq_length, tokenizer, top_n):
             input_ids.append(sent_input_ids)
             input_masks.append(sent_input_masks)
             segment_ids.append(sent_segment_ids)
-        if len(input_ids) != 2 * top_n:
-            print(f'error len {len(input_ids)}')
-            continue
+        # if len(input_ids) != 2 * top_n:
+        #     print(f'error len {len(input_ids)}')
+        #     continue
         features.append(
             InputFeatures(input_ids=input_ids,
                           input_mask=input_masks,
@@ -382,6 +384,8 @@ def main():
     args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
 
     print(f'args.train_batch_size = {args.train_batch_size}')
+    print(f'args.output_dir = {args.output_dir}')
+
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -398,6 +402,7 @@ def main():
         raise ValueError(
             "Cannot use sequence length {} because the BERT model was only trained up to sequence length {}"
             .format(args.max_seq_length, bert_config.max_position_embeddings))
+
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
         raise ValueError("Output directory ({}) already exists and is not empty.".format(
@@ -612,8 +617,8 @@ def main():
     if args.do_train:
         optimizer, scheduler = get_optimizers(num_training_steps=num_train_steps, model=model)
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-        eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
-        logger.info(f'初始开发集loss: {eval_loss}')
+        # eval_loss, acc, _ = eval_model(model, eval_dataloader, device)
+        # logger.info(f'初始开发集loss: {eval_loss}')
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             model.train()
             model_save_path = os.path.join(args.output_dir, f"{WEIGHTS_NAME}.{epoch}")

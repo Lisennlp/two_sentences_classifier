@@ -539,10 +539,10 @@ def main():
     no_decay = ['bias', 'gamma', 'beta']
     optimizer_grouped_parameters = [{
         'params': [p for n, p in param_optimizer if n not in no_decay],
-        'weight_decay_rate': 0.01
+        'weight_decay': 0.01
     }, {
         'params': [p for n, p in param_optimizer if n in no_decay],
-        'weight_decay_rate': 0.0
+        'weight_decay': 0.0
     }]
 
     eval_dataloader, example_map_ids = prepare_data(args, task_name='eval')

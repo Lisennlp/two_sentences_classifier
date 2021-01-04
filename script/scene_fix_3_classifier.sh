@@ -3,7 +3,7 @@
 if [ "$1" = "train" ]; then
         echo "start to train......"
 
-        CUDA_VISIBLE_DEVICES=2,3 python ../scene_classifier/fix_3_train.py \
+        CUDA_VISIBLE_DEVICES=4,5,2,3 python ../scene_classifier/fix_3_train.py \
                                     --vocab_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/vocab.txt    \
                                     --bert_config_file /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/bert_config.json   \
                                     --do_lower_case    \
@@ -11,16 +11,16 @@ if [ "$1" = "train" ]; then
                                     --eval_train_file  /nas/xd/projects/novel_analyzer/scene_cut_datas/0527/train_data.dev  \
                                     --eval_file  /nas/xd/projects/novel_analyzer/scene_cut_datas/0527/data.dev   \
                                     --train_batch_size 20   \
-                                    --eval_batch_size 20 \
+                                    --eval_batch_size 40 \
                                     --learning_rate 1e-5   \
                                     --num_train_epochs 6   \
-                                    --top_n 5   \
+                                    --top_n 9   \
                                     --num_labels 2   \
-                                    --output_dir ./5_scene_model0527_clear_l \
+                                    --output_dir ./9_scene_model_b40_lr5_5_eps6_decay \
                                     --bert_model /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese   \
                                     --init_checkpoint /nas/pretrain-bert/pretrain-pytorch/bert-base-chinese/pytorch_model.bin   \
                                     --do_train   \
-                                    --gradient_accumulation_steps 1 3>&2 2>&1 1>&3 | tee logs/5_scene_model0527_clear_l.log
+                                    --gradient_accumulation_steps 1 3>&2 2>&1 1>&3 | tee logs/5_scene_model_b20_lr1_5_eps6.log
 
 
 elif [ "$1" = "eval" ];then
