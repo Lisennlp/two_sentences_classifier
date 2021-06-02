@@ -26,6 +26,6 @@ scipy==1.4.1
 six==1.13.0
 torch==1.0.1.post2
 tqdm==4.43.0
-urllib3==1.25.7
+urllib3==1.26.5
 wcwidth==0.1.7
 zipp==0.6.0
