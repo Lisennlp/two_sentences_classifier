@@ -24,19 +24,19 @@ class EmbeddingsModel(object):
             model path: init model weight path
         """
         self.model_path = model_path
-        self.init_modle(TwoSentenceClassifier)
+        self.init_model(TwoSentenceClassifier)
 
     def replace_text(self, text):
         for key, value in key_word.items():
             text = re.sub(key, value, text)
         return text
 
-    def init_modle(self, model):
+    def init_model(self, model):
         print(f'starting to init model')
         vocab_path = os.path.join(self.model_path, 'vocab.txt')
         bert_config_file = os.path.join(self.model_path, 'bert_config.json')
         self.bert_config = BertConfig.from_json_file(bert_config_file)
-        self.model = model(self.bert_config, 2)
+        self.model = model(self.bert_config, 2, moe=True)
         weight_path = os.path.join(self.model_path, 'pytorch_model.bin')
         new_state_dict = torch.load(weight_path, map_location='cuda:1')
         new_state_dict = dict([
@@ -90,14 +90,17 @@ class EmbeddingsModel(object):
                                             dim=0).to(self.device).unsqueeze(0)
                     input_mask = torch.cat(all_input_mask[i:i + batch_size],
                                            dim=0).to(self.device).unsqueeze(0)
+                    # 1 * 1 * 768
                     output_vector = self.model(input_ids, segment_ids, input_mask, embedding=True)
+                    # print(f'output_vector: {output_vector.shape}')
                     output_vectors.append(output_vector)
+            # b * 768
             output_vectors = torch.cat(output_vectors, dim=1).squeeze()
             # vector_mode: bsz
-            sentences_vector_modes = torch.sqrt((output_vectors * output_vectors).sum(-1)).squeeze()
-            sentences_mean_vector = output_vectors.mean(0).squeeze()
-            assert len(sentences_mean_vector) == self.bert_config.hidden_size
-        return sentences_mean_vector.tolist(), sentences_vector_modes.tolist()
+            # sentences_vector_modes = torch.sqrt((output_vectors * output_vectors).sum(-1)).squeeze()
+            # sentences_mean_vector = output_vectors.mean(0).squeeze()
+            # assert len(sentences_mean_vector) == self.bert_config.hidden_size
+        return output_vectors, None
 
     def attention(self, sentences: list, batch_size=30, **kwargs):
         """

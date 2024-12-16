@@ -297,6 +297,83 @@ class BertEmbeddings(nn.Module):
         return embeddings
 
 
+class RMSnorm(nn.Module):
+
+    def __init__(self, hid_dim=128, epsilon=1e-6, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.hid_dim = hid_dim
+        self.epsilon = epsilon
+        self.scale = nn.parameter.Parameter(data=torch.ones(self.hid_dim))
+
+    def forward(self, inputs):
+        var = inputs.pow(2).mean(dim=self.dim, keepdim=True)
+        normed_inputs = inputs * torch.rsqrt(var + self.epsilon)
+        normed_inputs = normed_inputs * self.scale
+        return normed_inputs
+
+
+def unbind(ary, n, dim=0):
+    return [torch.squeeze(a, dim=dim) for a in torch.split(ary, ary.shape[dim] // n, dim=dim)]
+
+
+class RMSnormNoscale(nn.Module):
+
+    def __init__(self, epsilon=1e-6, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.epsilon = epsilon
+
+    def forward(self, inputs):
+        var = inputs.pow(2).mean(dim=self.dim, keepdim=True)
+        normed_inputs = inputs * torch.rsqrt(var + self.epsilon)
+        return normed_inputs
+
+
+class DynamicQK(nn.Module):
+    def __init__(self, config):
+        super(DynamicQK, self).__init__()
+        # self.wgq = nn.Linear(config.hidden_size, 2, config.num_attention_heads)
+        K = 16
+        I = 4
+        C = 2
+        dtype = torch.float32
+        self.dw1 = nn.parameter.Parameter(torch.zeros(config.hidden_size, C, K, dtype=dtype))
+        self.qkw = nn.parameter.Parameter(torch.zeros([C, K, I, config.num_attention_heads], dtype=dtype)) # (1, 4, 128, 4, 32)
+        self.dd = nn.parameter.Parameter(torch.zeros(config.hidden_size, config.num_attention_heads * 2, dtype=dtype)) # 
+        self.dw_activation = nn.Tanh()
+        self.dw1_norm = RMSnormNoscale(dim=-1)
+        self.head_dim = config.hidden_size // config.num_attention_heads
+        self.w = nn.parameter.Parameter(torch.randn(config.num_attention_heads, config.num_attention_heads))
+
+    def forward(self, query_vec, key_vec, logits):
+        # bt*768   768 * 4 * 16  -> dw_hidden: bt*4 * 16
+        dw_hidden = torch.einsum('BTD,DCK->BTCK', query_vec, self.dw1)  # C=4 [pre,post]*[query,key]
+        # qkw: 4 * 16 * 2 * 8   -> bt42n
+        w1, w2 = torch.split(torch.einsum('BTCK,CKIN->BTCIN', dw_hidden, self.qkw), self.qkw.shape[-2]//2, dim=-2) #BTGC(2I)M -> [BTGCIM] * 2
+        w1 = self.dw1_norm(w1) # BTCIN
+        # __import__('ipdb').set_trace()
+        # 32, 60, 2, 1, 12
+        qw1, kw1 = unbind(w1, 2, dim=2) # BT2IN->BTIN
+        qw2, kw2 = unbind(w2, 2, dim=2) # BT2IN->BTIN
+        dd = torch.einsum('BTD,DN->BTN', query_vec, self.dd) # BT(2*N)
+        dd = self.dw_activation(dd)
+        qdd, kdd = torch.split(dd, dd.shape[-1] // 2, dim=-1) # BT(2N)->[BTN]*2
+        
+        logits0 = torch.einsum('BMTS,MN->BNTS', logits, self.w)
+
+        _logits = torch.einsum('BNTS,BTIN->BTIS', logits, qw1)
+        logits1 = torch.einsum('BTIS,BTIN->BNTS', _logits, kw1)
+
+        _logits = torch.einsum('BNTS,BTIN->BTIS', logits, qw2)
+        logits2 = torch.einsum('BTIS,BTIN->BNTS', _logits, kw2)
+
+        _logits = torch.einsum('BNTS,BTN->BNTS', logits, qdd)
+        logits3 = torch.einsum('BNTS,BTN->BNTS', _logits, kdd)
+
+        return logits + logits0 + logits1 + logits2 + logits3
+
+
 class BertSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -313,6 +390,13 @@ class BertSelfAttention(nn.Module):
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        if hasattr(config, 'dynamic_qk'):
+            self.head_dim = config.hidden_size // self.num_attention_heads
+            self.q_norm = RMSnorm(hid_dim=self.head_dim)
+            self.k_norm = RMSnorm(hid_dim=self.head_dim)
+            self.dynamic_qk = DynamicQK(config=config)
+        else:
+            self.dynamic_qk = None
 
     def transpose_for_scores(self, x):
         # bsz x len x 8 x 64
@@ -329,6 +413,9 @@ class BertSelfAttention(nn.Module):
         key_layer = self.transpose_for_scores(mixed_key_layer)    # bsz x 8 x len x 64
         value_layer = self.transpose_for_scores(mixed_value_layer)    # bsz x 8 x len x 64
 
+        if self.dynamic_qk is not None:
+            query_layer, key_layer = self.q_norm(query_layer), self.k_norm(key_layer)
+
         # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = torch.matmul(query_layer,
                                         key_layer.transpose(-1, -2))    # bsz x 8 x len x len
@@ -339,6 +426,11 @@ class BertSelfAttention(nn.Module):
 
         # Normalize the attention scores to probabilities.
         attention_probs = nn.Softmax(dim=-1)(attention_scores)
+
+        # if self.dynamic_qk is not None:
+        #     attention_probs = self.dynamic_qk(hidden_states, hidden_states, attention_probs)
+        #     attention_probs = attention_probs + attention_mask 
+        #     attention_probs = nn.Softmax(dim=-1)(attention_probs)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.

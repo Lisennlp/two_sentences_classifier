@@ -501,7 +501,7 @@ def main():
             write_data['logits'] = probs.tolist()
         write_data.to_csv(args.result_file, index=False)
         assert len(labels) == len(logits)
-        result = classification_report(labels, logits, target_names=classify_name)
+        result = classification_report(labels, logits, target_names=classify_name, digits=4)
         return result
 
     def get_linear_schedule_with_warmup(optimizer,
