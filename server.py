@@ -110,5 +110,9 @@ if __name__ == '__main__':
     port = int(sys.argv[1])
     app.run(debug=True, host='0.0.0.0', port=port)
 
+"""
+# 启动命令：
+python server.py 5000
 # 请求示例：
-# curl -X POST http://127.0.0.1:5000/predict -H "Content-Type: application/json" -d '{"text_a": "人和畜生的区别是什么？", "text_b": "人与畜生的区别是什么！"}'
+curl -X POST http://127.0.0.1:5000/predict -H "Content-Type: application/json" -d '{"text_a": "人和畜生的区别是什么？", "text_b": "人与畜生的区别是什么！"}'
+"""
