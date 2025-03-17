@@ -3,6 +3,7 @@ import os
 from itertools import chain
 import json
 
+# 修改路径1
 sys.path.append('/nas2/lishengping/caiyun_projects/two_sentences_classifier/common_file/')
 
 import torch
@@ -49,7 +50,15 @@ def convert_text_to_ids(text_a, text_b):
 moe = True
 num_labels = 2
 reduce_dim = 768
-bert_config_file = '/nas2/lishengping/models/pretrain_models/bert_base_chinese/bert_config.json'
+
+
+# 修改路径2
+model_dir = '/nas2/lishengping/caiyun_projects/two_sentences_classifier/script/train-moe-LCQMC_1215_2/'
+
+bert_config_file = os.path.join(model_dir, 'bert_config.json')
+vocab_file = os.path.join(model_dir, 'vocab.txt')
+model_path = os.path.join(model_dir, 'pytorch_model.bin.e1.s13499')
+
 bert_config = BertConfig.from_json_file(bert_config_file)
 bert_config.reduce_dim = reduce_dim
 print(f'bert_config: {bert_config}')
@@ -60,10 +69,11 @@ model = TwoSentenceClassifier(bert_config,
                               moe=moe, 
                               os_loss=False)
 
-vocab_file = '/nas2/lishengping/models/pretrain_models/bert_base_chinese/vocab.txt'
+
 tokenizer = tokenization.FullTokenizer(vocab_file=vocab_file,
                                        do_lower_case=True)
-model_path = '/nas2/lishengping/caiyun_projects/two_sentences_classifier/script/train-moe-LCQMC_1215_2/pytorch_model.bin.e1.s13499'
+
+
 state_dict = torch.load(model_path, map_location='cpu')
 remove_prefix_state_dict = {k[7: ]: v for k, v in state_dict.items()}
 model.load_state_dict(remove_prefix_state_dict)
