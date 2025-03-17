@@ -408,6 +408,7 @@ def main():
 
     bert_config = BertConfig.from_json_file(args.bert_config_file)
     bert_config.reduce_dim = args.reduce_dim
+    logger.info(f'bert_config: {bert_config}')
 
     if args.max_seq_length > bert_config.max_position_embeddings:
         raise ValueError(
@@ -602,7 +603,7 @@ def main():
             len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs)
 
     # model = RelationClassifier(bert_config, num_labels=data_processor.num_labels)
-    model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels, moe=args.moe, os_loss=args.os_loss)
+    model = TwoSentenceClassifier(bert_config, num_labels=data_processor.num_labels, moe=args.moe, os_loss=args.os_loss, contrast_loss_coef=0.01)
 
     new_state_dict = model.state_dict()
     init_state_dict = torch.load(os.path.join(args.bert_model, 'pytorch_model.bin'))

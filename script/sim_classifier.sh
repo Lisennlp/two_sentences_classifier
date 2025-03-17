@@ -102,7 +102,6 @@ elif [ "$1" = "train-os_loss-bq_corpus" ];then
                                   --gradient_accumulation_steps 3 3>&2 2>&1 1>&3 | tee logs/bq_corpus_with_os_loss_1213.alpha.log
 
 elif [ "$1" = "train-moe-os_loss-bq_corpus" ];then
-        echo "start to train small data......"
         CUDA_VISIBLE_DEVICES=0,1 python ../relation_classifier/sim_classify.py \
                                   --vocab_file /nas2/lishengping/models/pretrain_models/bert_base_chinese/vocab.txt    \
                                   --bert_config_file /nas2/lishengping/models/pretrain_models/bert_base_chinese/bert_config.json   \
@@ -116,7 +115,7 @@ elif [ "$1" = "train-moe-os_loss-bq_corpus" ];then
                                   --num_train_epochs 6   \
                                   --top_n 1   \
                                   --num_labels 2  \
-                                  --output_dir ./small_relation_0701 \
+                                  --output_dir ./moe_bq_corpus0317 \
                                   --reduce_dim 768  \
                                   --gpu0_size 0  \
                                   --max_seq_length 50 \
@@ -125,7 +124,34 @@ elif [ "$1" = "train-moe-os_loss-bq_corpus" ];then
                                   --do_train   \
                                   --os_loss \
                                   --moe  \
-                                  --gradient_accumulation_steps 3 3>&2 2>&1 1>&3 | tee logs/bq_corpus_moe_os_loss_1213.alpha.log
+                                  --gradient_accumulation_steps 3 3>&2 2>&1 1>&3 | tee logs/moe_bq_corpus0317.os_loss.log
+
+elif [ "$1" = "train-moe-LCQMC" ];then
+        echo "start to train small data......"
+
+        CUDA_VISIBLE_DEVICES=2,3 python ../relation_classifier/sim_classify.py \
+                                  --vocab_file /nas2/lishengping/models/pretrain_models/bert_base_chinese/vocab.txt    \
+                                  --bert_config_file /nas2/lishengping/models/pretrain_models/bert_base_chinese/bert_config.json   \
+                                  --do_lower_case    \
+                                  --train_file /nas2/lishengping/caiyun_projects/sim_for_cls/data/LCQMC/train.txt  \
+                                  --eval_train_file  /nas2/lishengping/caiyun_projects/sim_for_cls/data/LCQMC/dev.txt  \
+                                  --eval_file  /nas2/lishengping/caiyun_projects/sim_for_cls/data/LCQMC/dev.txt   \
+                                  --train_batch_size  16 \
+                                  --eval_batch_size  16 \
+                                  --learning_rate 2e-5   \
+                                  --num_train_epochs 6   \
+                                  --top_n 1   \
+                                  --num_labels 2  \
+                                  --output_dir ./train-moe-LCQMC_0317 \
+                                  --reduce_dim 768  \
+                                  --gpu0_size 0  \
+                                  --max_seq_length 50 \
+                                  --bert_model /nas2/lishengping/models/pretrain_models/bert_base_chinese/   \
+                                  --init_checkpoint /nas2/lishengping/models/pretrain_models/bert_base_chinese/pytorch_model.bin   \
+                                  --do_train   \
+                                  --moe  \
+                                  --gradient_accumulation_steps 1 3>&2 2>&1 1>&3 | tee logs/LCQMC_moe_0317_d512.log
+
 
 elif [ "$1" = "train-LCQMC" ];then
         echo "start to train small data......"

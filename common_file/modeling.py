@@ -1100,7 +1100,7 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         all token mean -> 拼接  -> dropout0.3 -> 分类
     """
 
-    def __init__(self, config, num_labels, moe=False, os_loss=False):
+    def __init__(self, config, num_labels, moe=False, os_loss=False, contrast_loss_coef=0.0):
         super(TwoSentenceClassifier, self).__init__(config)
         self.config = config
         self.num_labels = num_labels
@@ -1116,6 +1116,7 @@ class TwoSentenceClassifier(BertPreTrainedModel):
 
         self.moe = moe
         self.os_loss = os_loss
+        self.contrast_loss_coef = contrast_loss_coef
         if self.moe:
             self.moe = MOE(config=config)
 
@@ -1179,8 +1180,22 @@ class TwoSentenceClassifier(BertPreTrainedModel):
         sentence_a_vector, sentence_b_vector = torch.chunk(output_vectors, 2, dim=1)
         # -> 2个bsz x 768
         # print(f'sentence_a_vector = {sentence_a_vector.shape}')
+        # b * 768
         sentence_a_vector = sentence_a_vector.mean(1).squeeze(1)
         sentence_b_vector = sentence_b_vector.mean(1).squeeze(1)
+        #
+        if self.contrast_loss_coef > 0.0:
+            # b * b, sentence_a_vector: b*d, sentence_b_vector:b*d
+            cosine_distances = torch.einsum('ad,bd->ab', sentence_a_vector, sentence_b_vector)
+            positive_mask = labels == 1
+            positive_cosine_distances = cosine_distances[positive_mask]
+            try:
+                closses = loss_fn(positive_cosine_distances, labels.nonzero().squeeze())
+                contrastive_loss = closses.mean()
+            except:
+                contrastive_loss = torch.tensor(0.0, device=sentence_a_vector.device)  # Handle the case where no positive labels exist
+            contrastive_loss *= self.contrast_loss_coef
+
         # 欧氏距离loss
         # bsz*num_labels x 768  -> # bsz*num_labels x 1
         # sentence_all_vector: bsz x 3*768
@@ -1197,7 +1212,7 @@ class TwoSentenceClassifier(BertPreTrainedModel):
             loss = loss_fn(logits, labels)
             if self.os_loss:
                 os_distance_loss = self.os_distance(sentence_a_vector, sentence_b_vector, labels)
-                return loss + os_distance_loss, os_distance_loss, logits
+                return loss + os_distance_loss + contrastive_loss, os_distance_loss, logits
             else:
                 return loss, logits
         else:
